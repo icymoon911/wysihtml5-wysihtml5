@@ -71,7 +71,9 @@ var wysihtml5ParserRules = {
         "wysiwyg-text-align-center": 1,
         "wysiwyg-text-align-justify": 1,
         "wysiwyg-text-align-left": 1,
-        "wysiwyg-text-align-right": 1
+        "wysiwyg-text-align-right": 1,
+        "wysiwyg-border": 1,
+        "wysiwyg-table": 1
     },
     /**
      * Tag list
@@ -295,7 +297,15 @@ var wysihtml5ParserRules = {
         "input": {
             "remove": 1
         },
-        "table": {},
+        "table": {
+            "check_attributes": {
+                "width": "numbers",
+                "height": "numbers",
+                "cellpadding": "numbers",
+                "cellspacing": "numbers",
+                "border": "numbers"
+            }
+        },
         "keygen": {
             "remove": 1
         },
@@ -497,7 +507,10 @@ var wysihtml5ParserRules = {
             "rename_tag": "span"
         },
         "col": {
-            "remove": 1
+            "check_attributes": {
+                "span": "numbers",
+                "width": "numbers"
+            }
         },
         "article": {
             "rename_tag": "div"
@@ -516,7 +529,10 @@ var wysihtml5ParserRules = {
             "rename_tag": "ul"
         },
         "colgroup": {
-            "remove": 1
+            "check_attributes": {
+                "span": "numbers",
+                "width": "numbers"
+            }
         },
         "ruby": {
             "rename_tag": "span"

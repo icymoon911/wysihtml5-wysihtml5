@@ -131,3 +131,25 @@
 .wysiwyg-clear-left {
   clear: left;
 }
+
+/* ---------- Table styles ---------- */
+
+table.wysiwyg-border {
+  border-collapse: collapse;
+  border: 1px solid #999;
+  margin: 8px 0;
+}
+
+table.wysiwyg-border td,
+table.wysiwyg-border th {
+  border: 1px solid #999;
+  padding: 4px 8px;
+  min-width: 30px;
+  min-height: 20px;
+  vertical-align: top;
+}
+
+table.wysiwyg-border th {
+  background-color: #f0f0f0;
+  font-weight: bold;
+}

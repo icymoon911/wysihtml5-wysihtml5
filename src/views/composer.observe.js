@@ -146,6 +146,44 @@
         event.preventDefault();
       }
     });
+
+    // --------- Tab key navigation in tables ---------
+    dom.observe(element, "keydown", function(event) {
+      if (event.keyCode !== wysihtml5.TAB_KEY) { return; }
+
+      var selectedNode  = that.selection.getSelectedNode(),
+          helpers       = wysihtml5.commands._tableHelpers;
+
+      if (!helpers) { return; }
+
+      var cell  = helpers.findParent(selectedNode, "TD") || helpers.findParent(selectedNode, "TH");
+      if (!cell) { return; }
+
+      var table = helpers.findParent(cell, "TABLE");
+      if (!table) { return; }
+
+      var nextCell;
+      if (event.shiftKey) {
+        // Shift+Tab: navigate to previous cell
+        nextCell = helpers.getPrevCell(cell, table);
+      } else {
+        // Tab: navigate to next cell; add a new row if at the last cell
+        nextCell = helpers.getNextCell(cell, table);
+        if (!nextCell) {
+          var cols = table.querySelector("tr")
+            ? table.querySelector("tr").querySelectorAll("td, th").length
+            : 1;
+          var newRow = helpers.addRow(table, cols);
+          nextCell = newRow.querySelector("td, th");
+        }
+      }
+
+      if (nextCell) {
+        helpers.selectCell(that, nextCell);
+      }
+
+      event.preventDefault();
+    });
     
     // --------- IE 8+9 focus the editor when the iframe is clicked (without actually firing the 'focus' event on the <body>) ---------
     if (browser.hasIframeFocusIssue()) {
