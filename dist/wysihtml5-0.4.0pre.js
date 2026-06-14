@@ -3397,20 +3397,30 @@ wysihtml5.browser = (function() {
   function iosVersion(userAgent) {
     return +((/ipad|iphone|ipod/.test(userAgent) && userAgent.match(/ os (\d+).+? like mac os x/)) || [, 0])[1];
   }
-  
+
   function androidVersion(userAgent) {
     return +(userAgent.match(/android (\d+)/) || [, 0])[1];
   }
-  
+
+  function chromeMobileVersion(userAgent) {
+    return +(userAgent.match(/chrome\/(\d+)/) || [, 0])[1];
+  }
+
+  function firefoxMobileVersion(userAgent) {
+    return +(userAgent.match(/firefox\/(\d+)/) || [, 0])[1];
+  }
+
   return {
     // Static variable needed, publicly accessible, to be able override it in unit tests
     USER_AGENT: userAgent,
-    
+
     /**
      * Exclude browsers that are not capable of displaying and handling
      * contentEditable as desired:
      *    - iPhone, iPad (tested iOS 4.2.2) and Android (tested 2.2) refuse to make contentEditables focusable
      *    - IE < 8 create invalid markup and crash randomly from time to time
+     *    - Modern mobile browsers (UC Browser, Opera Mini, older Chrome/Firefox Mobile)
+     *      have inconsistent contentEditable behavior
      *
      * @return {Boolean}
      */
@@ -3422,8 +3432,19 @@ wysihtml5.browser = (function() {
           hasEditingApiSupport        = document.execCommand && document.queryCommandSupported && document.queryCommandState,
           // document selector apis are only supported by IE 8+, Safari 4+, Chrome and Firefox 3.5+
           hasQuerySelectorSupport     = document.querySelector && document.querySelectorAll,
-          // contentEditable is unusable in mobile browsers (tested iOS 4.2.2, Android 2.2, Opera Mobile, WebOS 3.05)
-          isIncompatibleMobileBrowser = (this.isIos() && iosVersion(userAgent) < 5) || (this.isAndroid() && androidVersion(userAgent) < 4) || userAgent.indexOf("opera mobi") !== -1 || userAgent.indexOf("hpwos/") !== -1;
+          // contentEditable is unusable in many mobile browsers
+          // (tested iOS 4.2.2, Android 2.2, Opera Mobile, WebOS 3.05)
+          // Also block modern mobile browsers known to have contentEditable issues:
+          // UC Browser, Opera Mini, older Chrome Mobile and Firefox Mobile
+          isIncompatibleMobileBrowser = (this.isIos() && iosVersion(userAgent) < 5) ||
+            (this.isAndroid() && androidVersion(userAgent) < 4) ||
+            userAgent.indexOf("opera mobi") !== -1 ||
+            userAgent.indexOf("opera mini") !== -1 ||
+            userAgent.indexOf("hpwos/") !== -1 ||
+            userAgent.indexOf("ucbrowser") !== -1 ||
+            userAgent.indexOf("silk/") !== -1 ||
+            (this.isAndroid() && /mobile/.test(userAgent) && chromeMobileVersion(userAgent) > 0 && chromeMobileVersion(userAgent) < 45) ||
+            (this.isAndroid() && firefoxMobileVersion(userAgent) > 0 && firefoxMobileVersion(userAgent) < 45);
       return hasContentEditableSupport
         && hasEditingApiSupport
         && hasQuerySelectorSupport
@@ -3485,7 +3506,7 @@ wysihtml5.browser = (function() {
      * Firefox on OSX navigates through history when hitting CMD + Arrow right/left
      */
     hasHistoryIssue: function() {
-      return isGecko;
+      return isGecko && navigator.platform.substr(0, 3) === "Mac";
     },
 
     /**
@@ -3725,6 +3746,18 @@ wysihtml5.browser = (function() {
      */
     hasIframeFocusIssue: function() {
       return isIE;
+    },
+    
+    /**
+     * Chrome + Safari create invalid nested markup after paste
+     * 
+     *  <p>
+     *    foo
+     *    <p>bar</p> <!-- BOO! -->
+     *  </p>
+     */
+    createsNestedInvalidMarkupAfterPaste: function() {
+      return isWebKit;
     }
   };
 })();wysihtml5.lang.array = function(arr) {
@@ -3876,7 +3909,14 @@ wysihtml5.browser = (function() {
   };
 };(function() {
   var WHITE_SPACE_START = /^\s+/,
-      WHITE_SPACE_END   = /\s+$/;
+      WHITE_SPACE_END   = /\s+$/,
+      ENTITY_REG_EXP    = /[&<>"]/g,
+      ENTITY_MAP = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': "&quot;"
+      };
   wysihtml5.lang.string = function(str) {
     str = String(str);
     return {
@@ -3912,6 +3952,15 @@ wysihtml5.browser = (function() {
             return str.split(search).join(replace);
           }
         };
+      },
+      
+      /**
+       * @example
+       *    wysihtml5.lang.string("hello<br>").escapeHTML();
+       *    // => "hello&lt;br&gt;"
+       */
+      escapeHTML: function() {
+        return str.replace(ENTITY_REG_EXP, function(c) { return ENTITY_MAP[c]; });
       }
     };
   };
@@ -3941,9 +3990,52 @@ wysihtml5.browser = (function() {
        *    (^|[\>\(\{\[\s\>])
        */
       URL_REG_EXP           = /((https?:\/\/|www\.)[^\s<]{3,})/gi,
-      TRAILING_CHAR_REG_EXP = /([^\w\/\-](,?))$/i,
+      TRAILING_CHAR_REG_EXP = /[\.!\,]+$/,
       MAX_DISPLAY_LENGTH    = 100,
-      BRACKETS              = { ")": "(", "]": "[", "}": "{" };
+      OPENING_BRACKETS      = { "(": 1, "[": 1, "{": 1 },
+      CLOSING_BRACKETS      = { ")": "(", "]": "[", "}": "{" };
+
+  function _countChar(str, char) {
+    var count = 0;
+    for (var i = 0; i < str.length; i++) {
+      if (str[i] === char) count++;
+    }
+    return count;
+  }
+
+  /**
+   * Strip trailing punctuation from a URL while preserving balanced bracket pairs.
+   * For example, "http://en.wikipedia.org/wiki/Foo_(bar)" keeps the ")";
+   * "(http://example.com)" strips the outer trailing ")".
+   */
+  function _stripTrailingPunctuation(url) {
+    var stripped, i, char, openCount, closeCount, keepCount, result, openingChar;
+
+    // Strip trailing non-bracket punctuation (periods, commas, exclamation marks)
+    stripped = url.replace(TRAILING_CHAR_REG_EXP, "");
+
+    // Strip trailing closing brackets while counting how many to keep
+    keepCount = 0;
+    for (i = stripped.length - 1; i >= 0; i--) {
+      char = stripped[i];
+      if (CLOSING_BRACKETS[char]) {
+        openingChar = CLOSING_BRACKETS[char];
+        openCount  = _countChar(stripped, openingChar);
+        closeCount = _countChar(stripped, char);
+        if (closeCount <= openCount) {
+          // This closing bracket is balanced — stop stripping, keep it and all before
+          keepCount = stripped.length - i;
+          break;
+        }
+        // Unbalanced — remove it and continue checking
+        stripped = stripped.slice(0, -1);
+      } else {
+        break;
+      }
+    }
+
+    return stripped;
+  }
   
   function autoLink(element) {
     if (_hasParentThatShouldBeIgnored(element)) {
@@ -3963,24 +4055,28 @@ wysihtml5.browser = (function() {
    */
   function _convertUrlsToLinks(str) {
     return str.replace(URL_REG_EXP, function(match, url) {
-      var punctuation = (url.match(TRAILING_CHAR_REG_EXP) || [])[1] || "",
-          opening     = BRACKETS[punctuation];
-      url = url.replace(TRAILING_CHAR_REG_EXP, "");
+      // Determine how much trailing punctuation was stripped (to output it after the link)
+      var strippedUrl = _stripTrailingPunctuation(url),
+          punctuation = url.substring(strippedUrl.length),
+          realUrl     = strippedUrl,
+          displayUrl  = strippedUrl;
 
-      if (url.split(opening).length > url.split(punctuation).length) {
-        url = url + punctuation;
-        punctuation = "";
-      }
-      var realUrl    = url,
-          displayUrl = url;
-      if (url.length > MAX_DISPLAY_LENGTH) {
+      // Escape HTML entities in the display URL to prevent HTML injection
+      // (e.g. a URL containing <, >, &, or " would break the surrounding markup)
+      displayUrl = wysihtml5.lang.string(displayUrl).escapeHTML();
+
+      if (strippedUrl.length > MAX_DISPLAY_LENGTH) {
         displayUrl = displayUrl.substr(0, MAX_DISPLAY_LENGTH) + "...";
       }
+
       // Add http prefix if necessary
       if (realUrl.substr(0, 4) === "www.") {
         realUrl = "http://" + realUrl;
       }
-      
+
+      // Escape the href value to prevent breaking out of the attribute via " or other chars
+      realUrl = wysihtml5.lang.string(realUrl).escapeHTML();
+
       return '<a href="' + realUrl + '">' + displayUrl + '</a>' + punctuation;
     });
   }
@@ -4002,11 +4098,12 @@ wysihtml5.browser = (function() {
    */
   function _wrapMatchesInNode(textNode) {
     var parentNode  = textNode.parentNode,
+        nodeValue   = wysihtml5.lang.string(textNode.data).escapeHTML(),
         tempElement = _getTempElement(parentNode.ownerDocument);
     
     // We need to insert an empty/temporary <span /> to fix IE quirks
     // Elsewise IE would strip white space in the beginning
-    tempElement.innerHTML = "<span></span>" + _convertUrlsToLinks(textNode.data);
+    tempElement.innerHTML = "<span></span>" + _convertUrlsToLinks(nodeValue);
     tempElement.removeChild(tempElement.firstChild);
     
     while (tempElement.firstChild) {
@@ -4768,64 +4865,67 @@ wysihtml5.dom.parse = (function() {
       // Rename unknown tags to this
       DEFAULT_NODE_NAME   = "span",
       WHITE_SPACE_REG_EXP = /\s+/,
-      defaultRules        = { tags: {}, classes: {} },
-      currentRules        = {};
+      defaultRules        = { tags: {}, classes: {} };
   
   /**
    * Iterates over all childs of the element, recreates them, appends them into a document fragment
    * which later replaces the entire body content
    */
   function parse(elementOrHtml, rules, context, cleanUp) {
-    wysihtml5.lang.object(currentRules).merge(defaultRules).merge(rules).get();
-    
+    // Build a fresh, local rules object for each parse invocation.
+    // This avoids sharing state across concurrent editor instances which
+    // could cause one instance's parserRules to bleed into another.
+    var mergedRules = wysihtml5.lang.object({}).merge(defaultRules).merge(rules).get();
+
     context           = context || elementOrHtml.ownerDocument || document;
     var fragment      = context.createDocumentFragment(),
         isString      = typeof(elementOrHtml) === "string",
         element,
         newNode,
         firstChild;
-    
+
     if (isString) {
       element = wysihtml5.dom.getAsDom(elementOrHtml, context);
     } else {
       element = elementOrHtml;
     }
-    
+
     while (element.firstChild) {
-      firstChild  = element.firstChild;
+      firstChild = element.firstChild;
+      newNode = _convert(firstChild, cleanUp, mergedRules);
       element.removeChild(firstChild);
-      newNode = _convert(firstChild, cleanUp);
       if (newNode) {
         fragment.appendChild(newNode);
       }
     }
-    
+
     // Clear element contents
     element.innerHTML = "";
-    
+
     // Insert new DOM tree
     element.appendChild(fragment);
-    
+
     return isString ? wysihtml5.quirks.getCorrectInnerHTML(element) : element;
   }
   
-  function _convert(oldNode, cleanUp) {
+  function _convert(oldNode, cleanUp, rules) {
     var oldNodeType     = oldNode.nodeType,
         oldChilds       = oldNode.childNodes,
         oldChildsLength = oldChilds.length,
         method          = NODE_TYPE_MAPPING[oldNodeType],
         i               = 0,
+        fragment,
         newNode,
         newChild;
-    
-    newNode = method && method(oldNode);
-    
+
+    newNode = method && method(oldNode, rules);
+
     if (!newNode) {
       return null;
     }
-    
+
     for (i=0; i<oldChildsLength; i++) {
-      newChild = _convert(oldChilds[i], cleanUp);
+      newChild = _convert(oldChilds[i], cleanUp, rules);
       if (newChild) {
         newNode.appendChild(newChild);
       }
@@ -4833,19 +4933,22 @@ wysihtml5.dom.parse = (function() {
     
     // Cleanup senseless <span> elements
     if (cleanUp &&
-        newNode.childNodes.length <= 1 &&
         newNode.nodeName.toLowerCase() === DEFAULT_NODE_NAME &&
-        !newNode.attributes.length) {
-      return newNode.firstChild;
+        (!newNode.childNodes.length || !newNode.attributes.length)) {
+      fragment = newNode.ownerDocument.createDocumentFragment();
+      while (newNode.firstChild) {
+        fragment.appendChild(newNode.firstChild);
+      }
+      return fragment;
     }
     
     return newNode;
   }
   
-  function _handleElement(oldNode) {
+  function _handleElement(oldNode, rules) {
     var rule,
         newNode,
-        tagRules    = currentRules.tags,
+        tagRules    = rules.tags,
         nodeName    = oldNode.nodeName.toLowerCase(),
         scopeName   = oldNode.scopeName;
     
@@ -4900,19 +5003,19 @@ wysihtml5.dom.parse = (function() {
     }
     
     newNode = oldNode.ownerDocument.createElement(rule.rename_tag || nodeName);
-    _handleAttributes(oldNode, newNode, rule);
+    _handleAttributes(oldNode, newNode, rule, rules);
     
     oldNode = null;
     return newNode;
   }
   
-  function _handleAttributes(oldNode, newNode, rule) {
+  function _handleAttributes(oldNode, newNode, rule, rules) {
     var attributes          = {},                         // fresh new set of attributes to set on newNode
         setClass            = rule.set_class,             // classes to set
         addClass            = rule.add_class,             // add classes based on existing attributes
         setAttributes       = rule.set_attributes,        // attributes to set on the current node
         checkAttributes     = rule.check_attributes,      // check/convert values of attributes
-        allowedClasses      = currentRules.classes,
+        allowedClasses      = rules.classes,
         i                   = 0,
         classes             = [],
         newClasses          = [],
@@ -5054,8 +5157,17 @@ wysihtml5.dom.parse = (function() {
     }
   }
   
+  var INVISIBLE_SPACE_REG_EXP = /\uFEFF/g;
   function _handleText(oldNode) {
-    return oldNode.ownerDocument.createTextNode(oldNode.data);
+    var nextSibling = oldNode.nextSibling;
+    if (nextSibling && nextSibling.nodeType === wysihtml5.TEXT_NODE) {
+      // Concatenate text nodes
+      nextSibling.data = oldNode.data + nextSibling.data;
+    } else {
+      // \uFEFF = wysihtml5.INVISIBLE_SPACE (used as a hack in certain rich text editing situations)
+      var data = oldNode.data.replace(INVISIBLE_SPACE_REG_EXP, "");
+      return oldNode.ownerDocument.createTextNode(data);
+    } 
   }
   
   
@@ -6896,8 +7008,7 @@ wysihtml5.commands.bold = {
  * Instead we set a css class
  */
 (function(wysihtml5) {
-  var undef,
-      REG_EXP = /wysiwyg-font-size-[0-9a-z\-]+/g;
+  var REG_EXP = /wysiwyg-font-size-[0-9a-z\-]+/g;
   
   wysihtml5.commands.fontSize = {
     exec: function(composer, command, size) {
@@ -6906,10 +7017,6 @@ wysihtml5.commands.bold = {
 
     state: function(composer, command, size) {
       return wysihtml5.commands.formatInline.state(composer, command, "span", "wysiwyg-font-size-" + size, REG_EXP);
-    },
-
-    value: function() {
-      return undef;
     }
   };
 })(wysihtml5);
@@ -7255,13 +7362,18 @@ wysihtml5.commands.bold = {
   }
 };
 (function(wysihtml5) {
-  var NODE_NAME = "IMG";
-  
+  var NODE_NAME = "IMG",
+      /**
+       * Detects dangerous protocols in image src attributes that could lead to XSS.
+       * Blocks javascript:, vbscript:, data:, and file: URIs.
+       */
+      DANGEROUS_PROTOCOLS_REG_EXP = /^\s*(javascript|vbscript|data|file)\s*:/i;
+
   wysihtml5.commands.insertImage = {
     /**
      * Inserts an <img>
      * If selection is already an image link, it removes it
-     * 
+     *
      * @example
      *    // either ...
      *    wysihtml5.commands.insertImage.exec(composer, "insertImage", "http://www.google.de/logo.jpg");
@@ -7271,10 +7383,15 @@ wysihtml5.commands.bold = {
     exec: function(composer, command, value) {
       value = typeof(value) === "object" ? value : { src: value };
 
+      // Security: block dangerous protocols in src to prevent XSS
+      // (e.g. javascript:alert(1) would execute script when the image is loaded)
+      if (value.src != null && DANGEROUS_PROTOCOLS_REG_EXP.test(String(value.src))) {
+        throw new Error("Blocked potentially dangerous image src: " + value.src);
+      }
+
       var doc     = composer.doc,
           image   = this.state(composer),
           textNode,
-          i,
           parent;
 
       if (image) {
@@ -7297,11 +7414,8 @@ wysihtml5.commands.bold = {
 
       image = doc.createElement(NODE_NAME);
       
-      for (i in value) {
-        if (i === "className") {
-          i = "class";
-        }
-        image.setAttribute(i, value[i]);
+      for (var i in value) {
+        image.setAttribute(i === "className" ? "class" : i, value[i]);
       }
 
       composer.selection.insertNode(image);
@@ -7571,7 +7685,7 @@ wysihtml5.commands.redo = {
       Y_KEY               = 89,
       BACKSPACE_KEY       = 8,
       DELETE_KEY          = 46,
-      MAX_HISTORY_ENTRIES = 25,
+      DEFAULT_MAX_HISTORY = 25,
       DATA_ATTR_NODE      = "data-wysihtml5-selection-node",
       DATA_ATTR_OFFSET    = "data-wysihtml5-selection-offset",
       UNDO_HTML           = '<span id="_wysihtml5-undo" class="_wysihtml5-temp">' + wysihtml5.INVISIBLE_SPACE + '</span>',
@@ -7591,13 +7705,18 @@ wysihtml5.commands.redo = {
       this.editor = editor;
       this.composer = editor.composer;
       this.element = this.composer.element;
-      
+
+      // Allow the maximum history entries to be configured via editor.config
+      this.maxHistoryEntries = (editor.config && typeof(editor.config.maxHistoryEntries) === "number")
+        ? editor.config.maxHistoryEntries
+        : DEFAULT_MAX_HISTORY;
+
       this.position = 0;
       this.historyStr = [];
       this.historyDom = [];
-      
+
       this.transact();
-      
+
       this._observe();
     },
     
@@ -7647,12 +7766,19 @@ wysihtml5.commands.redo = {
       //  => When the second element appears in the dom tree then we know the user clicked "redo" in the context menu
       //  => When the first element disappears from the dom tree then we know the user clicked "undo" in the context menu
       if (wysihtml5.browser.hasUndoInContextMenu()) {
-        var interval, observed, cleanUp = function() {
-          cleanTempElements(doc);
-          clearInterval(interval);
-        };
-        
+        var observed,
+            that = this,
+            cleanUp = function() {
+              cleanTempElements(doc);
+              if (that._contextMenuInterval) {
+                clearInterval(that._contextMenuInterval);
+                that._contextMenuInterval = null;
+              }
+            };
+
         dom.observe(this.element, "contextmenu", function() {
+          // Always clear any existing interval first to prevent interval leaks
+          // when the user opens the context menu multiple times in rapid succession
           cleanUp();
           that.composer.selection.executeAndRestoreSimple(function() {
             if (that.element.lastChild) {
@@ -7666,7 +7792,7 @@ wysihtml5.commands.redo = {
             doc.execCommand("undo", false, null);
           });
 
-          interval = setInterval(function() {
+          that._contextMenuInterval = setInterval(function() {
             if (doc.getElementById("_wysihtml5-redo")) {
               cleanUp();
               that.redo();
@@ -7703,7 +7829,7 @@ wysihtml5.commands.redo = {
       }
       
       var length = this.historyStr.length = this.historyDom.length = this.position;
-      if (length > MAX_HISTORY_ENTRIES) {
+      if (length > this.maxHistoryEntries) {
         this.historyStr.shift();
         this.historyDom.shift();
         this.position--;
@@ -7895,11 +8021,6 @@ wysihtml5.views.View = Base.extend(
       if (parse) {
         value = this.parent.parse(value);
       }
-
-      // Replace all "zero width no breaking space" chars
-      // which are used as hacks to enable some functionalities
-      // Also remove all CARET hacks that somehow got left
-      value = wysihtml5.lang.string(value).replace(wysihtml5.INVISIBLE_SPACE).by("");
 
       return value;
     },
@@ -8228,6 +8349,16 @@ wysihtml5.views.View = Base.extend(
           }
         });
       }
+      
+      // Under certain circumstances Chrome + Safari create nested <p> or <hX> tags after paste
+      // Inserting an invisible white space in front of it fixes the issue
+      if (browser.createsNestedInvalidMarkupAfterPaste()) {
+        dom.observe(this.element, "paste", function(event) {
+          var invisibleSpace = that.doc.createTextNode(wysihtml5.INVISIBLE_SPACE);
+          that.selection.insertNode(invisibleSpace);
+        });
+      }
+
       
       dom.observe(this.doc, "keydown", function(event) {
         var keyCode = event.keyCode;
@@ -8896,6 +9027,7 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
           callbackWrapper(event);
         }
         if (keyCode === wysihtml5.ESCAPE_KEY) {
+          that.fire("cancel");
           that.hide();
         }
       });
@@ -9263,10 +9395,14 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
       for (; i<length; i++) {
         // 'javascript:;' and unselectable=on Needed for IE, but done in all browsers to make sure that all get the same css applied
         // (you know, a:link { ... } doesn't match anchors with missing href attribute)
-        dom.setAttributes({
-          href:         "javascript:;",
-          unselectable: "on"
-        }).on(links[i]);
+        if (links[i].nodeName === "A") {
+          dom.setAttributes({
+            href:         "javascript:;",
+            unselectable: "on"
+          }).on(links[i]);
+        } else {
+          dom.setAttributes({ unselectable: "on" }).on(links[i]);
+        }
       }
 
       // Needed for opera and chrome
@@ -9459,7 +9595,9 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
     // Placeholder text to use, defaults to the placeholder attribute on the textarea element
     placeholderText:      undef,
     // Whether the rich text editor should be rendered on touch devices (wysihtml5 >= 0.3.0 comes with basic support for iOS 5)
-    supportTouchDevices:  true
+    supportTouchDevices:  true,
+    // Whether senseless <span> elements (empty or without attributes) should be removed/replaced with their content
+    cleanUp:              true
   };
   
   wysihtml5.Editor = wysihtml5.lang.Dispatcher.extend(
@@ -9554,7 +9692,7 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
     },
     
     parse: function(htmlOrElement) {
-      var returnValue = this.config.parser(htmlOrElement, this.config.parserRules, this.composer.sandbox.getDocument(), true);
+      var returnValue = this.config.parser(htmlOrElement, this.config.parserRules, this.composer.sandbox.getDocument(), this.config.cleanUp);
       if (typeof(htmlOrElement) === "object") {
         wysihtml5.quirks.redraw(htmlOrElement);
       }

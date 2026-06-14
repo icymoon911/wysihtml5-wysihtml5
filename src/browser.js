@@ -14,20 +14,30 @@ wysihtml5.browser = (function() {
   function iosVersion(userAgent) {
     return +((/ipad|iphone|ipod/.test(userAgent) && userAgent.match(/ os (\d+).+? like mac os x/)) || [, 0])[1];
   }
-  
+
   function androidVersion(userAgent) {
     return +(userAgent.match(/android (\d+)/) || [, 0])[1];
   }
-  
+
+  function chromeMobileVersion(userAgent) {
+    return +(userAgent.match(/chrome\/(\d+)/) || [, 0])[1];
+  }
+
+  function firefoxMobileVersion(userAgent) {
+    return +(userAgent.match(/firefox\/(\d+)/) || [, 0])[1];
+  }
+
   return {
     // Static variable needed, publicly accessible, to be able override it in unit tests
     USER_AGENT: userAgent,
-    
+
     /**
      * Exclude browsers that are not capable of displaying and handling
      * contentEditable as desired:
      *    - iPhone, iPad (tested iOS 4.2.2) and Android (tested 2.2) refuse to make contentEditables focusable
      *    - IE < 8 create invalid markup and crash randomly from time to time
+     *    - Modern mobile browsers (UC Browser, Opera Mini, older Chrome/Firefox Mobile)
+     *      have inconsistent contentEditable behavior
      *
      * @return {Boolean}
      */
@@ -39,8 +49,19 @@ wysihtml5.browser = (function() {
           hasEditingApiSupport        = document.execCommand && document.queryCommandSupported && document.queryCommandState,
           // document selector apis are only supported by IE 8+, Safari 4+, Chrome and Firefox 3.5+
           hasQuerySelectorSupport     = document.querySelector && document.querySelectorAll,
-          // contentEditable is unusable in mobile browsers (tested iOS 4.2.2, Android 2.2, Opera Mobile, WebOS 3.05)
-          isIncompatibleMobileBrowser = (this.isIos() && iosVersion(userAgent) < 5) || (this.isAndroid() && androidVersion(userAgent) < 4) || userAgent.indexOf("opera mobi") !== -1 || userAgent.indexOf("hpwos/") !== -1;
+          // contentEditable is unusable in many mobile browsers
+          // (tested iOS 4.2.2, Android 2.2, Opera Mobile, WebOS 3.05)
+          // Also block modern mobile browsers known to have contentEditable issues:
+          // UC Browser, Opera Mini, older Chrome Mobile and Firefox Mobile
+          isIncompatibleMobileBrowser = (this.isIos() && iosVersion(userAgent) < 5) ||
+            (this.isAndroid() && androidVersion(userAgent) < 4) ||
+            userAgent.indexOf("opera mobi") !== -1 ||
+            userAgent.indexOf("opera mini") !== -1 ||
+            userAgent.indexOf("hpwos/") !== -1 ||
+            userAgent.indexOf("ucbrowser") !== -1 ||
+            userAgent.indexOf("silk/") !== -1 ||
+            (this.isAndroid() && /mobile/.test(userAgent) && chromeMobileVersion(userAgent) > 0 && chromeMobileVersion(userAgent) < 45) ||
+            (this.isAndroid() && firefoxMobileVersion(userAgent) > 0 && firefoxMobileVersion(userAgent) < 45);
       return hasContentEditableSupport
         && hasEditingApiSupport
         && hasQuerySelectorSupport

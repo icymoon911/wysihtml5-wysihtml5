@@ -24,9 +24,52 @@
        *    (^|[\>\(\{\[\s\>])
        */
       URL_REG_EXP           = /((https?:\/\/|www\.)[^\s<]{3,})/gi,
-      TRAILING_CHAR_REG_EXP = /([^\w\/\-](,?))$/i,
+      TRAILING_CHAR_REG_EXP = /[\.!\,]+$/,
       MAX_DISPLAY_LENGTH    = 100,
-      BRACKETS              = { ")": "(", "]": "[", "}": "{" };
+      OPENING_BRACKETS      = { "(": 1, "[": 1, "{": 1 },
+      CLOSING_BRACKETS      = { ")": "(", "]": "[", "}": "{" };
+
+  function _countChar(str, char) {
+    var count = 0;
+    for (var i = 0; i < str.length; i++) {
+      if (str[i] === char) count++;
+    }
+    return count;
+  }
+
+  /**
+   * Strip trailing punctuation from a URL while preserving balanced bracket pairs.
+   * For example, "http://en.wikipedia.org/wiki/Foo_(bar)" keeps the ")";
+   * "(http://example.com)" strips the outer trailing ")".
+   */
+  function _stripTrailingPunctuation(url) {
+    var stripped, i, char, openCount, closeCount, keepCount, result, openingChar;
+
+    // Strip trailing non-bracket punctuation (periods, commas, exclamation marks)
+    stripped = url.replace(TRAILING_CHAR_REG_EXP, "");
+
+    // Strip trailing closing brackets while counting how many to keep
+    keepCount = 0;
+    for (i = stripped.length - 1; i >= 0; i--) {
+      char = stripped[i];
+      if (CLOSING_BRACKETS[char]) {
+        openingChar = CLOSING_BRACKETS[char];
+        openCount  = _countChar(stripped, openingChar);
+        closeCount = _countChar(stripped, char);
+        if (closeCount <= openCount) {
+          // This closing bracket is balanced — stop stripping, keep it and all before
+          keepCount = stripped.length - i;
+          break;
+        }
+        // Unbalanced — remove it and continue checking
+        stripped = stripped.slice(0, -1);
+      } else {
+        break;
+      }
+    }
+
+    return stripped;
+  }
   
   function autoLink(element) {
     if (_hasParentThatShouldBeIgnored(element)) {
@@ -46,24 +89,28 @@
    */
   function _convertUrlsToLinks(str) {
     return str.replace(URL_REG_EXP, function(match, url) {
-      var punctuation = (url.match(TRAILING_CHAR_REG_EXP) || [])[1] || "",
-          opening     = BRACKETS[punctuation];
-      url = url.replace(TRAILING_CHAR_REG_EXP, "");
+      // Determine how much trailing punctuation was stripped (to output it after the link)
+      var strippedUrl = _stripTrailingPunctuation(url),
+          punctuation = url.substring(strippedUrl.length),
+          realUrl     = strippedUrl,
+          displayUrl  = strippedUrl;
 
-      if (url.split(opening).length > url.split(punctuation).length) {
-        url = url + punctuation;
-        punctuation = "";
-      }
-      var realUrl    = url,
-          displayUrl = url;
-      if (url.length > MAX_DISPLAY_LENGTH) {
+      // Escape HTML entities in the display URL to prevent HTML injection
+      // (e.g. a URL containing <, >, &, or " would break the surrounding markup)
+      displayUrl = wysihtml5.lang.string(displayUrl).escapeHTML();
+
+      if (strippedUrl.length > MAX_DISPLAY_LENGTH) {
         displayUrl = displayUrl.substr(0, MAX_DISPLAY_LENGTH) + "...";
       }
+
       // Add http prefix if necessary
       if (realUrl.substr(0, 4) === "www.") {
         realUrl = "http://" + realUrl;
       }
-      
+
+      // Escape the href value to prevent breaking out of the attribute via " or other chars
+      realUrl = wysihtml5.lang.string(realUrl).escapeHTML();
+
       return '<a href="' + realUrl + '">' + displayUrl + '</a>' + punctuation;
     });
   }

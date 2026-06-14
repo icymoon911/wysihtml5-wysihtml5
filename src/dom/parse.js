@@ -65,48 +65,50 @@ wysihtml5.dom.parse = (function() {
       // Rename unknown tags to this
       DEFAULT_NODE_NAME   = "span",
       WHITE_SPACE_REG_EXP = /\s+/,
-      defaultRules        = { tags: {}, classes: {} },
-      currentRules        = {};
+      defaultRules        = { tags: {}, classes: {} };
   
   /**
    * Iterates over all childs of the element, recreates them, appends them into a document fragment
    * which later replaces the entire body content
    */
   function parse(elementOrHtml, rules, context, cleanUp) {
-    wysihtml5.lang.object(currentRules).merge(defaultRules).merge(rules).get();
-    
+    // Build a fresh, local rules object for each parse invocation.
+    // This avoids sharing state across concurrent editor instances which
+    // could cause one instance's parserRules to bleed into another.
+    var mergedRules = wysihtml5.lang.object({}).merge(defaultRules).merge(rules).get();
+
     context           = context || elementOrHtml.ownerDocument || document;
     var fragment      = context.createDocumentFragment(),
         isString      = typeof(elementOrHtml) === "string",
         element,
         newNode,
         firstChild;
-    
+
     if (isString) {
       element = wysihtml5.dom.getAsDom(elementOrHtml, context);
     } else {
       element = elementOrHtml;
     }
-    
+
     while (element.firstChild) {
       firstChild = element.firstChild;
-      newNode = _convert(firstChild, cleanUp);
+      newNode = _convert(firstChild, cleanUp, mergedRules);
       element.removeChild(firstChild);
       if (newNode) {
         fragment.appendChild(newNode);
       }
     }
-    
+
     // Clear element contents
     element.innerHTML = "";
-    
+
     // Insert new DOM tree
     element.appendChild(fragment);
-    
+
     return isString ? wysihtml5.quirks.getCorrectInnerHTML(element) : element;
   }
   
-  function _convert(oldNode, cleanUp) {
+  function _convert(oldNode, cleanUp, rules) {
     var oldNodeType     = oldNode.nodeType,
         oldChilds       = oldNode.childNodes,
         oldChildsLength = oldChilds.length,
@@ -115,15 +117,15 @@ wysihtml5.dom.parse = (function() {
         fragment,
         newNode,
         newChild;
-    
-    newNode = method && method(oldNode);
-    
+
+    newNode = method && method(oldNode, rules);
+
     if (!newNode) {
       return null;
     }
-    
+
     for (i=0; i<oldChildsLength; i++) {
-      newChild = _convert(oldChilds[i], cleanUp);
+      newChild = _convert(oldChilds[i], cleanUp, rules);
       if (newChild) {
         newNode.appendChild(newChild);
       }
@@ -143,10 +145,10 @@ wysihtml5.dom.parse = (function() {
     return newNode;
   }
   
-  function _handleElement(oldNode) {
+  function _handleElement(oldNode, rules) {
     var rule,
         newNode,
-        tagRules    = currentRules.tags,
+        tagRules    = rules.tags,
         nodeName    = oldNode.nodeName.toLowerCase(),
         scopeName   = oldNode.scopeName;
     
@@ -201,19 +203,19 @@ wysihtml5.dom.parse = (function() {
     }
     
     newNode = oldNode.ownerDocument.createElement(rule.rename_tag || nodeName);
-    _handleAttributes(oldNode, newNode, rule);
+    _handleAttributes(oldNode, newNode, rule, rules);
     
     oldNode = null;
     return newNode;
   }
   
-  function _handleAttributes(oldNode, newNode, rule) {
+  function _handleAttributes(oldNode, newNode, rule, rules) {
     var attributes          = {},                         // fresh new set of attributes to set on newNode
         setClass            = rule.set_class,             // classes to set
         addClass            = rule.add_class,             // add classes based on existing attributes
         setAttributes       = rule.set_attributes,        // attributes to set on the current node
         checkAttributes     = rule.check_attributes,      // check/convert values of attributes
-        allowedClasses      = currentRules.classes,
+        allowedClasses      = rules.classes,
         i                   = 0,
         classes             = [],
         newClasses          = [],

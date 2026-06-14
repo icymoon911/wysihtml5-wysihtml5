@@ -7,7 +7,7 @@
       Y_KEY               = 89,
       BACKSPACE_KEY       = 8,
       DELETE_KEY          = 46,
-      MAX_HISTORY_ENTRIES = 25,
+      DEFAULT_MAX_HISTORY = 25,
       DATA_ATTR_NODE      = "data-wysihtml5-selection-node",
       DATA_ATTR_OFFSET    = "data-wysihtml5-selection-offset",
       UNDO_HTML           = '<span id="_wysihtml5-undo" class="_wysihtml5-temp">' + wysihtml5.INVISIBLE_SPACE + '</span>',
@@ -27,13 +27,18 @@
       this.editor = editor;
       this.composer = editor.composer;
       this.element = this.composer.element;
-      
+
+      // Allow the maximum history entries to be configured via editor.config
+      this.maxHistoryEntries = (editor.config && typeof(editor.config.maxHistoryEntries) === "number")
+        ? editor.config.maxHistoryEntries
+        : DEFAULT_MAX_HISTORY;
+
       this.position = 0;
       this.historyStr = [];
       this.historyDom = [];
-      
+
       this.transact();
-      
+
       this._observe();
     },
     
@@ -83,12 +88,19 @@
       //  => When the second element appears in the dom tree then we know the user clicked "redo" in the context menu
       //  => When the first element disappears from the dom tree then we know the user clicked "undo" in the context menu
       if (wysihtml5.browser.hasUndoInContextMenu()) {
-        var interval, observed, cleanUp = function() {
-          cleanTempElements(doc);
-          clearInterval(interval);
-        };
-        
+        var observed,
+            that = this,
+            cleanUp = function() {
+              cleanTempElements(doc);
+              if (that._contextMenuInterval) {
+                clearInterval(that._contextMenuInterval);
+                that._contextMenuInterval = null;
+              }
+            };
+
         dom.observe(this.element, "contextmenu", function() {
+          // Always clear any existing interval first to prevent interval leaks
+          // when the user opens the context menu multiple times in rapid succession
           cleanUp();
           that.composer.selection.executeAndRestoreSimple(function() {
             if (that.element.lastChild) {
@@ -102,7 +114,7 @@
             doc.execCommand("undo", false, null);
           });
 
-          interval = setInterval(function() {
+          that._contextMenuInterval = setInterval(function() {
             if (doc.getElementById("_wysihtml5-redo")) {
               cleanUp();
               that.redo();
@@ -139,7 +151,7 @@
       }
       
       var length = this.historyStr.length = this.historyDom.length = this.position;
-      if (length > MAX_HISTORY_ENTRIES) {
+      if (length > this.maxHistoryEntries) {
         this.historyStr.shift();
         this.historyDom.shift();
         this.position--;

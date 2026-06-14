@@ -1,11 +1,16 @@
 (function(wysihtml5) {
-  var NODE_NAME = "IMG";
-  
+  var NODE_NAME = "IMG",
+      /**
+       * Detects dangerous protocols in image src attributes that could lead to XSS.
+       * Blocks javascript:, vbscript:, data:, and file: URIs.
+       */
+      DANGEROUS_PROTOCOLS_REG_EXP = /^\s*(javascript|vbscript|data|file)\s*:/i;
+
   wysihtml5.commands.insertImage = {
     /**
      * Inserts an <img>
      * If selection is already an image link, it removes it
-     * 
+     *
      * @example
      *    // either ...
      *    wysihtml5.commands.insertImage.exec(composer, "insertImage", "http://www.google.de/logo.jpg");
@@ -14,6 +19,12 @@
      */
     exec: function(composer, command, value) {
       value = typeof(value) === "object" ? value : { src: value };
+
+      // Security: block dangerous protocols in src to prevent XSS
+      // (e.g. javascript:alert(1) would execute script when the image is loaded)
+      if (value.src != null && DANGEROUS_PROTOCOLS_REG_EXP.test(String(value.src))) {
+        throw new Error("Blocked potentially dangerous image src: " + value.src);
+      }
 
       var doc     = composer.doc,
           image   = this.state(composer),
