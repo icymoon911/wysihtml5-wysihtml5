@@ -24,6 +24,7 @@ JS_FILES = src/wysihtml5.js \
   src/dom/get_style.js \
   src/dom/has_element_with_tag_name.js \
   src/dom/has_element_with_class_name.js \
+  src/dom/helpers.js \
   src/dom/insert.js \
   src/dom/insert_css.js \
   src/dom/observe.js \
@@ -44,22 +45,19 @@ JS_FILES = src/wysihtml5.js \
   src/selection/selection.js \
   src/selection/html_applier.js \
   src/commands.js \
+  src/commands/formatBlock.js \
+  src/commands/formatInline.js \
   src/commands/bold.js \
   src/commands/createLink.js \
   src/commands/fontSize.js \
   src/commands/foreColor.js \
-  src/commands/formatBlock.js \
-  src/commands/formatInline.js \
   src/commands/insertHTML.js \
   src/commands/insertImage.js \
   src/commands/insertLineBreak.js \
   src/commands/insertOrderedList.js \
   src/commands/insertUnorderedList.js \
   src/commands/italic.js \
-  src/commands/justifyCenter.js \
-  src/commands/justifyLeft.js \
-  src/commands/justifyRight.js \
-  src/commands/justifyFull.js \
+  src/commands/justify.js \
   src/commands/redo.js \
   src/commands/underline.js \
   src/commands/undo.js \

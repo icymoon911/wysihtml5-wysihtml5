@@ -3,16 +3,8 @@
  * which we don't want
  * Instead we set a css class
  */
-(function(wysihtml5) {
-  var REG_EXP = /wysiwyg-font-size-[0-9a-z\-]+/g;
-  
-  wysihtml5.commands.fontSize = {
-    exec: function(composer, command, size) {
-      return wysihtml5.commands.formatInline.exec(composer, command, "span", "wysiwyg-font-size-" + size, REG_EXP);
-    },
-
-    state: function(composer, command, size) {
-      return wysihtml5.commands.formatInline.state(composer, command, "span", "wysiwyg-font-size-" + size, REG_EXP);
-    }
-  };
-})(wysihtml5);
+wysihtml5.commands.formatInline.createCommand("fontSize", {
+  tagName:         "span",
+  classNamePrefix: "wysiwyg-font-size-",
+  classRegExp:     /wysiwyg-font-size-[0-9a-z\-]+/g
+});

@@ -20,7 +20,26 @@
       CLASS_NAME_COMMAND_ACTIVE     = "wysihtml5-command-active",
       CLASS_NAME_ACTION_ACTIVE      = "wysihtml5-action-active",
       dom                           = wysihtml5.dom;
-  
+
+  /**
+   * Look up a registered link by its name and value within a linkList.
+   * Replaces the old string-concatenated mapping key (name + ":" + value),
+   * which was fragile when values contained colons.
+   *
+   * @param {Array}  linkList  Array of link entry objects
+   * @param {String} name      The command or action name
+   * @param {String} value     The command or action value (may be null/undefined)
+   * @return {Object|null}     The matching link entry, or null
+   */
+  function findLink(linkList, name, value) {
+    for (var i = 0, len = linkList.length; i < len; i++) {
+      if (linkList[i].name === name && linkList[i].value === value) {
+        return linkList[i];
+      }
+    }
+    return null;
+  }
+
   wysihtml5.toolbar.Toolbar = Base.extend(
     /** @scope wysihtml5.toolbar.Toolbar.prototype */ {
     constructor: function(editor, container) {
@@ -28,12 +47,17 @@
       this.container  = typeof(container) === "string" ? document.getElementById(container) : container;
       this.composer   = editor.composer;
 
-      this._getLinks("command");
-      this._getLinks("action");
+      // Unified link registration: both commands and actions use the same structure.
+      // Each list stores objects with { link, group, name, value, dialog, state }
+      this.commandLinks = [];
+      this.actionLinks  = [];
+
+      this._registerLinks("command", this.commandLinks);
+      this._registerLinks("action",  this.actionLinks);
 
       this._observe();
       this.show();
-      
+
       var speechInputLinks  = this.container.querySelectorAll("[data-wysihtml5-command=insertSpeech]"),
           length            = speechInputLinks.length,
           i                 = 0;
@@ -42,31 +66,41 @@
       }
     },
 
-    _getLinks: function(type) {
-      var links   = this[type + "Links"] = wysihtml5.lang.array(this.container.querySelectorAll("[data-wysihtml5-" + type + "]")).get(),
+    /**
+     * Unified link registration method.
+     * Scans the toolbar container for elements with the given data-attribute type
+     * and populates the target list with structured entry objects.
+     *
+     * Replaces the old _getLinks method which had duplicated logic for "command" and "action".
+     *
+     * @param {String} type       Either "command" or "action"
+     * @param {Array}  targetList Array to populate with link entry objects
+     */
+    _registerLinks: function(type, targetList) {
+      var links   = wysihtml5.lang.array(this.container.querySelectorAll("[data-wysihtml5-" + type + "]")).get(),
           length  = links.length,
           i       = 0,
-          mapping = this[type + "Mapping"] = {},
           link,
           group,
           name,
           value,
           dialog;
+
       for (; i<length; i++) {
         link    = links[i];
         name    = link.getAttribute("data-wysihtml5-" + type);
         value   = link.getAttribute("data-wysihtml5-" + type + "-value");
         group   = this.container.querySelector("[data-wysihtml5-" + type + "-group='" + name + "']");
-        dialog  = this._getDialog(link, name);
-        
-        mapping[name + ":" + value] = {
+        dialog  = (type === "command") ? this._getDialog(link, name) : null;
+
+        targetList.push({
           link:   link,
           group:  group,
           name:   name,
           value:  value,
           dialog: dialog,
           state:  false
-        };
+        });
       }
     },
 
@@ -75,7 +109,7 @@
           dialogElement = this.container.querySelector("[data-wysihtml5-dialog='" + command + "']"),
           dialog,
           caretBookmark;
-      
+
       if (dialogElement) {
         dialog = new wysihtml5.toolbar.Dialog(link, dialogElement);
 
@@ -90,7 +124,7 @@
             that.composer.selection.setBookmark(caretBookmark);
           }
           that._execCommand(command, attributes);
-          
+
           that.editor.fire("save:dialog", { command: command, dialogContainer: dialogElement, commandLink: link });
         });
 
@@ -113,7 +147,7 @@
         return;
       }
 
-      var commandObj = this.commandMapping[command + ":" + commandValue];
+      var commandObj = findLink(this.commandLinks, command, commandValue);
 
       // Show dialog when available
       if (commandObj && commandObj.dialog && !commandObj.state) {
@@ -149,23 +183,23 @@
           links     = this.commandLinks.concat(this.actionLinks),
           length    = links.length,
           i         = 0;
-      
+
       for (; i<length; i++) {
         // 'javascript:;' and unselectable=on Needed for IE, but done in all browsers to make sure that all get the same css applied
         // (you know, a:link { ... } doesn't match anchors with missing href attribute)
-        if (links[i].nodeName === "A") {
+        if (links[i].link.nodeName === "A") {
           dom.setAttributes({
             href:         "javascript:;",
             unselectable: "on"
-          }).on(links[i]);
+          }).on(links[i].link);
         } else {
-          dom.setAttributes({ unselectable: "on" }).on(links[i]);
+          dom.setAttributes({ unselectable: "on" }).on(links[i].link);
         }
       }
 
       // Needed for opera and chrome
       dom.delegate(container, "[data-wysihtml5-command], [data-wysihtml5-action]", "mousedown", function(event) { event.preventDefault(); });
-      
+
       dom.delegate(container, "[data-wysihtml5-command]", "click", function(event) {
         var link          = this,
             command       = link.getAttribute("data-wysihtml5-command"),
@@ -209,15 +243,16 @@
     },
 
     _updateLinkStates: function() {
-      var commandMapping    = this.commandMapping,
-          actionMapping     = this.actionMapping,
+      var commandLinks  = this.commandLinks,
+          actionLinks   = this.actionLinks,
           i,
           state,
           action,
           command;
-      // every millisecond counts... this is executed quite often
-      for (i in commandMapping) {
-        command = commandMapping[i];
+
+      // Update command link states
+      for (i = 0; i < commandLinks.length; i++) {
+        command = commandLinks[i];
         if (this.commandsDisabled) {
           state = false;
           dom.removeClass(command.link, CLASS_NAME_COMMAND_ACTIVE);
@@ -269,10 +304,11 @@
           }
         }
       }
-      
-      for (i in actionMapping) {
-        action = actionMapping[i];
-        
+
+      // Update action link states
+      for (i = 0; i < actionLinks.length; i++) {
+        action = actionLinks[i];
+
         if (action.name === "change_view") {
           action.state = this.editor.currentView === this.editor.textarea;
           if (action.state) {
@@ -292,5 +328,5 @@
       this.container.style.display = "none";
     }
   });
-  
+
 })(wysihtml5);

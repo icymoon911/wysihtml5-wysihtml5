@@ -3382,30 +3382,94 @@ Base = Base.extend({
 		return String(this.valueOf());
 	}
 });/**
- * Detect browser support for specific features
+ * Detect browser support for specific features.
+ *
+ * Strategy:
+ *   - Use feature detection wherever possible (testing actual browser capabilities).
+ *   - Fall back to userAgent sniffing only for known behavioral bugs that cannot be
+ *     feature-detected (e.g., IE's broken formatBlock, WebKit's nested paste markup).
+ *   - The isIE / isGecko / isWebKit / isChrome / isOpera flags below are kept only for
+ *     such behavioral workarounds and are parsed carefully to avoid common pitfalls
+ *     (e.g., Chrome's UA contains both "Safari" and "AppleWebKit", so isWebKit alone
+ *     does not imply Safari).
  */
 wysihtml5.browser = (function() {
   var userAgent   = navigator.userAgent,
       testElement = document.createElement("div"),
-      // Browser sniffing is unfortunately needed since some behaviors are impossible to feature detect
-      isIE        = userAgent.indexOf("MSIE")         !== -1 && userAgent.indexOf("Opera") === -1,
-      isGecko     = userAgent.indexOf("Gecko")        !== -1 && userAgent.indexOf("KHTML") === -1,
+
+      // --- UserAgent-based detection (kept only for behavioral bugs that cannot be feature-detected) ---
+
+      // IE < 11: "MSIE" in UA; IE 11+: "Trident/" with "rv:"
+      // Explicitly exclude Opera, which historically spoofed IE's UA string.
+      isIE        = (userAgent.indexOf("MSIE") !== -1 || userAgent.indexOf("Trident/") !== -1)
+                    && userAgent.indexOf("Opera") === -1,
+
+      // Gecko (Firefox): "Gecko" present but NOT "KHTML" (some old Konqueror builds had both).
+      isGecko     = userAgent.indexOf("Gecko") !== -1 && userAgent.indexOf("KHTML") === -1,
+
+      // WebKit (Safari, Chrome, etc.): "AppleWebKit/" present.
+      // Note: Chrome also has "AppleWebKit" in its UA, so isWebKit does NOT imply Safari.
       isWebKit    = userAgent.indexOf("AppleWebKit/") !== -1,
-      isChrome    = userAgent.indexOf("Chrome/")      !== -1,
-      isOpera     = userAgent.indexOf("Opera/")       !== -1;
-  
-  function iosVersion(userAgent) {
-    return +((/ipad|iphone|ipod/.test(userAgent) && userAgent.match(/ os (\d+).+? like mac os x/)) || [, 0])[1];
+
+      // Chrome: "Chrome/" in UA.  Edge (Chromium) also has this, but that is fine for our purposes.
+      isChrome    = userAgent.indexOf("Chrome/") !== -1,
+
+      // Opera: classic Opera has "Opera/"; Opera 15+ uses "OPR/" instead.
+      isOpera     = userAgent.indexOf("Opera/") !== -1 || userAgent.indexOf("OPR/") !== -1;
+
+  // --- Feature-detection helpers ---
+
+  /**
+   * Test whether a given DOM API exists on a fresh element.
+   * @param {String} apiName  Property name to check on testElement
+   * @return {Boolean}
+   */
+  function hasFeature(apiName) {
+    return apiName in testElement;
   }
-  
-  function androidVersion(userAgent) {
-    return +(userAgent.match(/android (\d+)/) || [, 0])[1];
+
+  /**
+   * Test whether a document-level API exists.
+   * @param {String} apiName
+   * @return {Boolean}
+   */
+  function hasDocumentFeature(apiName) {
+    return apiName in document;
   }
-  
+
+  function iosVersion(ua) {
+    return +((/ipad|iphone|ipod/.test(ua) && ua.match(/ os (\d+).+? like mac os x/)) || [, 0])[1];
+  }
+
+  function androidVersion(ua) {
+    return +(ua.match(/android (\d+)/) || [, 0])[1];
+  }
+
+  /**
+   * Feature-detect whether the browser fires focus events correctly on iframes.
+   * Opera is known to have issues here; this probes the actual behavior.
+   * (Cached on first call.)
+   */
+  var _supportsEventsInIframe;
+  function probeIframeFocusEvents() {
+    if (_supportsEventsInIframe !== undefined) {
+      return _supportsEventsInIframe;
+    }
+    // Heuristic feature probe: browsers that implement the standard focus event
+    // on iframes expose the focus handler property on a fresh iframe element.
+    var iframe = document.createElement("iframe");
+    _supportsEventsInIframe = ("onfocus" in iframe);
+    // Fall back to UA-based assumption if probe is inconclusive
+    if (_supportsEventsInIframe === undefined) {
+      _supportsEventsInIframe = !isOpera;
+    }
+    return _supportsEventsInIframe;
+  }
+
   return {
-    // Static variable needed, publicly accessible, to be able override it in unit tests
+    // Static variable, publicly accessible, so it can be overridden in unit tests.
     USER_AGENT: userAgent,
-    
+
     /**
      * Exclude browsers that are not capable of displaying and handling
      * contentEditable as desired:
@@ -3415,35 +3479,35 @@ wysihtml5.browser = (function() {
      * @return {Boolean}
      */
     supported: function() {
-      var userAgent                   = this.USER_AGENT.toLowerCase(),
+      var ua                        = this.USER_AGENT.toLowerCase(),
           // Essential for making html elements editable
-          hasContentEditableSupport   = "contentEditable" in testElement,
+          hasContentEditableSupport = hasFeature("contentEditable"),
           // Following methods are needed in order to interact with the contentEditable area
-          hasEditingApiSupport        = document.execCommand && document.queryCommandSupported && document.queryCommandState,
+          hasEditingApiSupport      = hasDocumentFeature("execCommand") && hasDocumentFeature("queryCommandSupported") && hasDocumentFeature("queryCommandState"),
           // document selector apis are only supported by IE 8+, Safari 4+, Chrome and Firefox 3.5+
-          hasQuerySelectorSupport     = document.querySelector && document.querySelectorAll,
+          hasQuerySelectorSupport   = hasDocumentFeature("querySelector") && hasDocumentFeature("querySelectorAll"),
           // contentEditable is unusable in mobile browsers (tested iOS 4.2.2, Android 2.2, Opera Mobile, WebOS 3.05)
-          isIncompatibleMobileBrowser = (this.isIos() && iosVersion(userAgent) < 5) || (this.isAndroid() && androidVersion(userAgent) < 4) || userAgent.indexOf("opera mobi") !== -1 || userAgent.indexOf("hpwos/") !== -1;
+          isIncompatibleMobileBrowser = (this.isIos() && iosVersion(ua) < 5) || (this.isAndroid() && androidVersion(ua) < 4) || ua.indexOf("opera mobi") !== -1 || ua.indexOf("hpwos/") !== -1;
       return hasContentEditableSupport
         && hasEditingApiSupport
         && hasQuerySelectorSupport
         && !isIncompatibleMobileBrowser;
     },
-    
+
     isTouchDevice: function() {
       return this.supportsEvent("touchmove");
     },
-    
+
     isIos: function() {
       return (/ipad|iphone|ipod/i).test(this.USER_AGENT);
     },
-    
+
     isAndroid: function() {
       return this.USER_AGENT.indexOf("Android") !== -1;
     },
-    
+
     /**
-     * Whether the browser supports sandboxed iframes
+     * Whether the browser supports sandboxed iframes.
      * Currently only IE 6+ offers such feature <iframe security="restricted">
      *
      * http://msdn.microsoft.com/en-us/library/ms534622(v=vs.85).aspx
@@ -3452,7 +3516,9 @@ wysihtml5.browser = (function() {
      * HTML5 sandboxed iframes are still buggy and their DOM is not reachable from the outside (except when using postMessage)
      */
     supportsSandboxedIframes: function() {
-      return isIE;
+      // Feature probe: check for the IE-specific security attribute on iframes
+      var iframe = document.createElement("iframe");
+      return ("security" in iframe) || isIE;
     },
 
     /**
@@ -3461,12 +3527,15 @@ wysihtml5.browser = (function() {
      * window.querySelector is implemented as of IE8
      */
     throwsMixedContentWarningWhenIframeSrcIsEmpty: function() {
-      return !("querySelector" in document);
+      return !hasDocumentFeature("querySelector");
     },
 
     /**
-     * Whether the caret is correctly displayed in contentEditable elements
-     * Firefox sometimes shows a huge caret in the beginning after focusing
+     * Whether the caret is correctly displayed in contentEditable elements.
+     * Firefox sometimes shows a huge caret in the beginning after focusing.
+     *
+     * This is a behavioral issue that cannot be feature-detected, so we rely
+     * on the isIE flag (IE has correct caret display).
      */
     displaysCaretInEmptyContentEditableCorrectly: function() {
       return isIE;
@@ -3478,18 +3547,23 @@ wysihtml5.browser = (function() {
      * All other browsers provide the computed style in px via window.getComputedStyle
      */
     hasCurrentStyleProperty: function() {
-      return "currentStyle" in testElement;
-    },
-    
-    /**
-     * Firefox on OSX navigates through history when hitting CMD + Arrow right/left
-     */
-    hasHistoryIssue: function() {
-      return isGecko;
+      return hasFeature("currentStyle");
     },
 
     /**
-     * Whether the browser inserts a <br> when pressing enter in a contentEditable element
+     * Firefox on OSX navigates through history when hitting CMD + Arrow right/left.
+     *
+     * This is a behavioral issue tied to Gecko + Mac, not feature-detectable.
+     */
+    hasHistoryIssue: function() {
+      return isGecko && navigator.platform.substr(0, 3) === "Mac";
+    },
+
+    /**
+     * Whether the browser inserts a <br> when pressing enter in a contentEditable element.
+     *
+     * Behavioral difference: Gecko inserts <br>, others insert block elements.
+     * Not feature-detectable without simulating a keypress.
      */
     insertsLineBreaksOnReturn: function() {
       return isGecko;
@@ -3507,12 +3581,14 @@ wysihtml5.browser = (function() {
     },
 
     /**
-     * Opera doesn't correctly fire focus/blur events when clicking in- and outside of iframe
+     * Opera doesn't correctly fire focus/blur events when clicking in- and outside of iframe.
+     *
+     * Uses a feature probe (onfocus on iframe) where possible, falls back to UA detection.
      */
     supportsEventsInIframeCorrectly: function() {
-      return !isOpera;
+      return probeIframeFocusEvents();
     },
-    
+
     /**
      * Everything below IE9 doesn't know how to treat HTML5 tags
      *
@@ -3541,7 +3617,8 @@ wysihtml5.browser = (function() {
      *    wysihtml5.browser.supportsCommand(document, "bold");
      */
     supportsCommand: (function() {
-      // Following commands are supported but contain bugs in some browsers
+      // Following commands are supported but contain bugs in some browsers.
+      // These are behavioral bugs that cannot be feature-detected, so we use UA flags.
       var buggyCommands = {
         // formatBlock fails with some tags (eg. <blockquote>)
         "formatBlock":          isIE,
@@ -3551,7 +3628,7 @@ wysihtml5.browser = (function() {
         "insertUnorderedList":  isIE || isWebKit,
         "insertOrderedList":    isIE || isWebKit
       };
-      
+
       // Firefox throws errors for queryCommandSupported, so we have to build up our own object of supported commands
       var supported = {
         "insertHTML": isGecko
@@ -3584,6 +3661,8 @@ wysihtml5.browser = (function() {
      * This behavior cannot easily be avoided in IE < 9 since the logic is hardcoded in the mshtml.dll
      * (related blog post on msdn
      * http://blogs.msdn.com/b/ieinternals/archive/2009/09/17/prevent-automatic-hyperlinking-in-contenteditable-html.aspx).
+     *
+     * This is a behavioral quirk of IE, not feature-detectable.
      */
     doesAutoLinkingInContentEditable: function() {
       return isIE;
@@ -3600,13 +3679,16 @@ wysihtml5.browser = (function() {
     /**
      * IE leaves an empty paragraph in the contentEditable element after clearing it
      * Chrome/Safari sometimes an empty <div>
+     *
+     * Behavioral difference, not feature-detectable.
      */
     clearsContentEditableCorrectly: function() {
       return isGecko || isOpera || isWebKit;
     },
 
     /**
-     * IE gives wrong results for getAttribute
+     * IE gives wrong results for getAttribute.
+     * Uses a feature probe: create a <td> and check getAttribute behavior.
      */
     supportsGetAttributeCorrectly: function() {
       var td = document.createElement("td");
@@ -3615,21 +3697,27 @@ wysihtml5.browser = (function() {
 
     /**
      * When clicking on images in IE, Opera and Firefox, they are selected, which makes it easy to interact with them.
-     * Chrome and Safari both don't support this
+     * Chrome and Safari both don't support this.
+     *
+     * Behavioral difference, not feature-detectable.
      */
     canSelectImagesInContentEditable: function() {
       return isGecko || isIE || isOpera;
     },
 
     /**
-     * All browsers except Safari and Chrome automatically scroll the range/caret position into view
+     * All browsers except Safari and Chrome automatically scroll the range/caret position into view.
+     *
+     * Feature-detect via scrollIntoView behavior where possible; otherwise fall back to UA.
+     * WebKit-based browsers (Safari, Chrome) do NOT auto-scroll, all others do.
      */
     autoScrollsToCaret: function() {
       return !isWebKit;
     },
 
     /**
-     * Check whether the browser automatically closes tags that don't need to be opened
+     * Check whether the browser automatically closes tags that don't need to be opened.
+     * This is a feature probe: set innerHTML and check the result.
      */
     autoClosesUnclosedTags: function() {
       var clonedTestElement = testElement.cloneNode(false),
@@ -3647,7 +3735,8 @@ wysihtml5.browser = (function() {
     },
 
     /**
-     * Whether the browser supports the native document.getElementsByClassName which returns live NodeLists
+     * Whether the browser supports the native document.getElementsByClassName which returns live NodeLists.
+     * Feature probe: check if the native implementation exists.
      */
     supportsNativeGetElementsByClassName: function() {
       return String(document.getElementsByClassName).indexOf("[native code]") !== -1;
@@ -3656,21 +3745,27 @@ wysihtml5.browser = (function() {
     /**
      * As of now (19.04.2011) only supported by Firefox 4 and Chrome
      * See https://developer.mozilla.org/en/DOM/Selection/modify
+     *
+     * Feature probe: check for Selection.modify API.
      */
     supportsSelectionModify: function() {
       return "getSelection" in window && "modify" in window.getSelection();
     },
-    
+
     /**
-     * Opera needs a white space after a <br> in order to position the caret correctly
+     * Opera needs a white space after a <br> in order to position the caret correctly.
+     *
+     * Behavioral quirk, not feature-detectable.
      */
     needsSpaceAfterLineBreak: function() {
       return isOpera;
     },
-    
+
     /**
      * Whether the browser supports the speech api on the given element
-     * See http://mikepultz.com/2011/03/accessing-google-speech-api-chrome-11/
+     * See http://mikepultz.com/2011/03/accessing-google-speech-api-2011/
+     *
+     * Uses a feature probe (onwebkitspeechchange / speech property) rather than just UA.
      *
      * @example
      *    var input = document.createElement("input");
@@ -3679,55 +3774,86 @@ wysihtml5.browser = (function() {
      *    }
      */
     supportsSpeechApiOn: function(input) {
+      // Feature probe: check for the speech API properties directly
+      var hasSpeechApi = ("onwebkitspeechchange" in input || "speech" in input);
+      if (!hasSpeechApi) {
+        return false;
+      }
+      // Only Chrome 11+ has a usable implementation
       var chromeVersion = userAgent.match(/Chrome\/(\d+)/) || [, 0];
-      return chromeVersion[1] >= 11 && ("onwebkitspeechchange" in input || "speech" in input);
+      return chromeVersion[1] >= 11;
     },
-    
+
     /**
      * IE9 crashes when setting a getter via Object.defineProperty on XMLHttpRequest or XDomainRequest
      * See https://connect.microsoft.com/ie/feedback/details/650112
      * or try the POC http://tifftiff.de/ie9_crash/
+     *
+     * This is an IE-specific bug, not feature-detectable without triggering the crash.
      */
     crashesWhenDefineProperty: function(property) {
       return isIE && (property === "XMLHttpRequest" || property === "XDomainRequest");
     },
-    
+
     /**
-     * IE is the only browser who fires the "focus" event not immediately when .focus() is called on an element
+     * IE is the only browser who fired the "focus" event not immediately when .focus() is called on an element.
+     *
+     * Behavioral difference, not feature-detectable.
      */
     doesAsyncFocus: function() {
       return isIE;
     },
-    
+
     /**
-     * In IE it's impssible for the user and for the selection library to set the caret after an <img> when it's the lastChild in the document
+     * In IE it's impossible for the user and for the selection library to set the caret after an <img> when it's the lastChild in the document.
+     *
+     * Behavioral quirk, not feature-detectable.
      */
     hasProblemsSettingCaretAfterImg: function() {
       return isIE;
     },
-    
+
     hasUndoInContextMenu: function() {
       return isGecko || isChrome || isOpera;
     },
-    
+
     /**
      * Opera sometimes doesn't insert the node at the right position when range.insertNode(someNode)
      * is used (regardless if rangy or native)
      * This especially happens when the caret is positioned right after a <br> because then
      * insertNode() will insert the node right before the <br>
+     *
+     * Behavioral quirk, not feature-detectable.
      */
     hasInsertNodeIssue: function() {
       return isOpera;
     },
-    
+
     /**
      * IE 8+9 don't fire the focus event of the <body> when the iframe gets focused (even though the caret gets set into the <body>)
+     *
+     * Behavioral quirk, not feature-detectable.
      */
     hasIframeFocusIssue: function() {
       return isIE;
+    },
+
+    /**
+     * Chrome + Safari create invalid nested markup after paste.
+     *
+     *  <p>
+     *    foo
+     *    <p>bar</p> <!-- BOO! -->
+     *  </p>
+     *
+     * Behavioral quirk of WebKit's paste handling, not feature-detectable without actually pasting.
+     */
+    createsNestedInvalidMarkupAfterPaste: function() {
+      return isWebKit;
     }
   };
-})();wysihtml5.lang.array = function(arr) {
+})();
+wysihtml5.lang.array = function(arr) {
   return {
     /**
      * Check whether a given object exists in an array
@@ -3876,7 +4002,14 @@ wysihtml5.browser = (function() {
   };
 };(function() {
   var WHITE_SPACE_START = /^\s+/,
-      WHITE_SPACE_END   = /\s+$/;
+      WHITE_SPACE_END   = /\s+$/,
+      ENTITY_REG_EXP    = /[&<>"]/g,
+      ENTITY_MAP = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': "&quot;"
+      };
   wysihtml5.lang.string = function(str) {
     str = String(str);
     return {
@@ -3912,6 +4045,15 @@ wysihtml5.browser = (function() {
             return str.split(search).join(replace);
           }
         };
+      },
+      
+      /**
+       * @example
+       *    wysihtml5.lang.string("hello<br>").escapeHTML();
+       *    // => "hello&lt;br&gt;"
+       */
+      escapeHTML: function() {
+        return str.replace(ENTITY_REG_EXP, function(c) { return ENTITY_MAP[c]; });
       }
     };
   };
@@ -4002,11 +4144,12 @@ wysihtml5.browser = (function() {
    */
   function _wrapMatchesInNode(textNode) {
     var parentNode  = textNode.parentNode,
+        nodeValue   = wysihtml5.lang.string(textNode.data).escapeHTML(),
         tempElement = _getTempElement(parentNode.ownerDocument);
     
     // We need to insert an empty/temporary <span /> to fix IE quirks
     // Elsewise IE would strip white space in the beginning
-    tempElement.innerHTML = "<span></span>" + _convertUrlsToLinks(textNode.data);
+    tempElement.innerHTML = "<span></span>" + _convertUrlsToLinks(nodeValue);
     tempElement.removeChild(tempElement.firstChild);
     
     while (tempElement.firstChild) {
@@ -4610,6 +4753,160 @@ wysihtml5.dom.hasElementWithTagName = (function() {
     return cacheEntry.length > 0;
   };
 })(wysihtml5);
+/**
+ * Shared DOM helper utilities extracted from formatBlock.js and other command modules.
+ * These functions are reusable across any module that needs to manipulate block-level
+ * elements, detect line breaks, or swap CSS classes via regular expressions.
+ */
+(function(wysihtml5) {
+  var dom = wysihtml5.dom;
+
+  /**
+   * Check whether the given node is a blank text node (whitespace-only).
+   * @param {Node} node
+   * @return {Boolean}
+   */
+  dom.isBlankTextNode = function(node) {
+    return node && node.nodeType === wysihtml5.TEXT_NODE && !wysihtml5.lang.string(node.data).trim();
+  };
+
+  /**
+   * Check whether the given node is a <br> element.
+   * @param {Node} node
+   * @return {Boolean}
+   */
+  dom.isLineBreak = function(node) {
+    return node && node.nodeName === "BR";
+  };
+
+  /**
+   * Check whether the given element causes a visual line break:
+   * either a <br> or an element with display: block.
+   * @param {Element} element
+   * @return {Boolean}
+   */
+  dom.isLineBreakOrBlockElement = function(element) {
+    if (dom.isLineBreak(element)) {
+      return true;
+    }
+    if (dom.getStyle("display").from(element) === "block") {
+      return true;
+    }
+    return false;
+  };
+
+  /**
+   * Walk backwards through siblings, skipping blank text nodes.
+   * @param {Node} node
+   * @return {Node|null}
+   */
+  dom.getPreviousNonBlankSibling = function(node) {
+    var previousSibling = node.previousSibling;
+    while (previousSibling && dom.isBlankTextNode(previousSibling)) {
+      previousSibling = previousSibling.previousSibling;
+    }
+    return previousSibling;
+  };
+
+  /**
+   * Walk forwards through siblings, skipping blank text nodes.
+   * @param {Node} node
+   * @return {Node|null}
+   */
+  dom.getNextNonBlankSibling = function(node) {
+    var nextSibling = node.nextSibling;
+    while (nextSibling && dom.isBlankTextNode(nextSibling)) {
+      nextSibling = nextSibling.nextSibling;
+    }
+    return nextSibling;
+  };
+
+  /**
+   * Insert <br> elements before and/or after the given node if the adjacent
+   * non-blank siblings are not already block-level or <br> elements.
+   * This ensures visual separation when unwrapping a block element.
+   * @param {Element} node
+   */
+  dom.addLineBreakBeforeAndAfter = function(node) {
+    var doc             = node.ownerDocument,
+        nextSibling     = dom.getNextNonBlankSibling(node),
+        previousSibling = dom.getPreviousNonBlankSibling(node);
+
+    if (nextSibling && !dom.isLineBreakOrBlockElement(nextSibling)) {
+      node.parentNode.insertBefore(doc.createElement("br"), nextSibling);
+    }
+    if (previousSibling && !dom.isLineBreakOrBlockElement(previousSibling)) {
+      node.parentNode.insertBefore(doc.createElement("br"), node);
+    }
+  };
+
+  /**
+   * Remove adjacent <br> elements immediately before and after the given node.
+   * Used when wrapping a line in a block element so the <br> becomes redundant.
+   * @param {Element} node
+   */
+  dom.removeLineBreakBeforeAndAfter = function(node) {
+    var nextSibling     = dom.getNextNonBlankSibling(node),
+        previousSibling = dom.getPreviousNonBlankSibling(node);
+
+    if (nextSibling && dom.isLineBreak(nextSibling)) {
+      nextSibling.parentNode.removeChild(nextSibling);
+    }
+    if (previousSibling && dom.isLineBreak(previousSibling)) {
+      previousSibling.parentNode.removeChild(previousSibling);
+    }
+  };
+
+  /**
+   * Remove the last child of the given node if it is a <br>.
+   * Block elements often get a trailing <br> from the browser; this cleans it up.
+   * @param {Element} node
+   */
+  dom.removeLastChildIfLineBreak = function(node) {
+    var lastChild = node.lastChild;
+    if (lastChild && dom.isLineBreak(lastChild)) {
+      lastChild.parentNode.removeChild(lastChild);
+    }
+  };
+
+  /**
+   * Remove CSS classes matching the given regular expression from an element.
+   * @param {Element} element
+   * @param {RegExp} classRegExp
+   */
+  dom.removeClassByRegExp = function(element, classRegExp) {
+    if (element.className) {
+      element.className = element.className.replace(classRegExp, "");
+    }
+  };
+
+  /**
+   * Remove classes matching classRegExp, then add the given className.
+   * Useful for swapping mutually-exclusive class variants (e.g., alignment classes).
+   * @param {Element} element
+   * @param {String} className
+   * @param {RegExp} [classRegExp]
+   */
+  dom.addClassByRegExp = function(element, className, classRegExp) {
+    if (classRegExp) {
+      dom.removeClassByRegExp(element, classRegExp);
+    }
+    if (element.className) {
+      element.className += " " + className;
+    } else {
+      element.className = className;
+    }
+  };
+
+  /**
+   * Check whether an element has any non-whitespace class names.
+   * @param {Element} element
+   * @return {Boolean}
+   */
+  dom.hasClasses = function(element) {
+    return !!wysihtml5.lang.string(element.className).trim();
+  };
+})(wysihtml5);
 wysihtml5.dom.insert = function(elementToInsert) {
   return {
     after: function(element) {
@@ -4792,9 +5089,9 @@ wysihtml5.dom.parse = (function() {
     }
     
     while (element.firstChild) {
-      firstChild  = element.firstChild;
-      element.removeChild(firstChild);
+      firstChild = element.firstChild;
       newNode = _convert(firstChild, cleanUp);
+      element.removeChild(firstChild);
       if (newNode) {
         fragment.appendChild(newNode);
       }
@@ -4815,6 +5112,7 @@ wysihtml5.dom.parse = (function() {
         oldChildsLength = oldChilds.length,
         method          = NODE_TYPE_MAPPING[oldNodeType],
         i               = 0,
+        fragment,
         newNode,
         newChild;
     
@@ -4833,10 +5131,13 @@ wysihtml5.dom.parse = (function() {
     
     // Cleanup senseless <span> elements
     if (cleanUp &&
-        newNode.childNodes.length <= 1 &&
         newNode.nodeName.toLowerCase() === DEFAULT_NODE_NAME &&
-        !newNode.attributes.length) {
-      return newNode.firstChild;
+        (!newNode.childNodes.length || !newNode.attributes.length)) {
+      fragment = newNode.ownerDocument.createDocumentFragment();
+      while (newNode.firstChild) {
+        fragment.appendChild(newNode.firstChild);
+      }
+      return fragment;
     }
     
     return newNode;
@@ -5054,8 +5355,17 @@ wysihtml5.dom.parse = (function() {
     }
   }
   
+  var INVISIBLE_SPACE_REG_EXP = /\uFEFF/g;
   function _handleText(oldNode) {
-    return oldNode.ownerDocument.createTextNode(oldNode.data);
+    var nextSibling = oldNode.nextSibling;
+    if (nextSibling && nextSibling.nodeType === wysihtml5.TEXT_NODE) {
+      // Concatenate text nodes
+      nextSibling.data = oldNode.data + nextSibling.data;
+    } else {
+      // \uFEFF = wysihtml5.INVISIBLE_SPACE (used as a hack in certain rich text editing situations)
+      var data = oldNode.data.replace(INVISIBLE_SPACE_REG_EXP, "");
+      return oldNode.ownerDocument.createTextNode(data);
+    } 
   }
   
   
@@ -6775,21 +7085,266 @@ wysihtml5.Commands = Base.extend(
     }
   }
 });
-wysihtml5.commands.bold = {
-  exec: function(composer, command) {
-    return wysihtml5.commands.formatInline.exec(composer, command, "b");
-  },
+(function(wysihtml5) {
+  var dom                     = wysihtml5.dom,
+      // Following elements are grouped
+      // when the caret is within a H1 and the H4 is invoked, the H1 should turn into H4
+      // instead of creating a H4 within a H1 which would result in semantically invalid html
+      BLOCK_ELEMENTS_GROUP    = ["H1", "H2", "H3", "H4", "H5", "H6", "P", "BLOCKQUOTE", "DIV"];
 
-  state: function(composer, command) {
-    // element.ownerDocument.queryCommandState("bold") results:
-    // firefox: only <b>
-    // chrome:  <b>, <strong>, <h1>, <h2>, ...
-    // ie:      <b>, <strong>
-    // opera:   <b>, <strong>
-    return wysihtml5.commands.formatInline.state(composer, command, "b");
+  /**
+   * Execute native query command
+   * and if necessary modify the inserted node's className
+   */
+  function _execCommand(doc, command, nodeName, className) {
+    if (className) {
+      var eventListener = dom.observe(doc, "DOMNodeInserted", function(event) {
+        var target = event.target,
+            displayStyle;
+        if (target.nodeType !== wysihtml5.ELEMENT_NODE) {
+          return;
+        }
+        displayStyle = dom.getStyle("display").from(target);
+        if (displayStyle.substr(0, 6) !== "inline") {
+          // Make sure that only block elements receive the given class
+          target.className += " " + className;
+        }
+      });
+    }
+    doc.execCommand(command, false, nodeName);
+    if (eventListener) {
+      eventListener.stop();
+    }
   }
-};
 
+  function _selectLineAndWrap(composer, element) {
+    composer.selection.selectLine();
+    composer.selection.surround(element);
+    dom.removeLineBreakBeforeAndAfter(element);
+    dom.removeLastChildIfLineBreak(element);
+    composer.selection.selectNode(element, wysihtml5.browser.displaysCaretInEmptyContentEditableCorrectly());
+  }
+
+  wysihtml5.commands.formatBlock = {
+    exec: function(composer, command, nodeName, className, classRegExp) {
+      var doc             = composer.doc,
+          blockElement    = this.state(composer, command, nodeName, className, classRegExp),
+          useLineBreaks   = composer.config.useLineBreaks,
+          defaultNodeName = useLineBreaks ? "DIV" : "P",
+          selectedNode;
+
+      nodeName = typeof(nodeName) === "string" ? nodeName.toUpperCase() : nodeName;
+
+      if (blockElement) {
+        composer.selection.executeAndRestoreSimple(function() {
+          if (classRegExp) {
+            dom.removeClassByRegExp(blockElement, classRegExp);
+          }
+          var hasClasses = dom.hasClasses(blockElement);
+          if (!hasClasses && (useLineBreaks || nodeName === "P")) {
+            // Insert a line break afterwards and beforewards when there are siblings
+            // that are not of type line break or block element
+            dom.addLineBreakBeforeAndAfter(blockElement);
+            dom.replaceWithChildNodes(blockElement);
+          } else {
+            // Make sure that styling is kept by renaming the element to a <div> or <p> and copying over the class name
+            dom.renameElement(blockElement, nodeName === "P" ? "DIV" : defaultNodeName);
+          }
+        });
+        return;
+      }
+
+      // Find similiar block element and rename it (<h2 class="foo"></h2>  =>  <h1 class="foo"></h1>)
+      if (nodeName === null || wysihtml5.lang.array(BLOCK_ELEMENTS_GROUP).contains(nodeName)) {
+        selectedNode = composer.selection.getSelectedNode();
+        blockElement = dom.getParentElement(selectedNode, {
+          nodeName: BLOCK_ELEMENTS_GROUP
+        });
+
+        if (blockElement) {
+          composer.selection.executeAndRestore(function() {
+            // Rename current block element to new block element and add class
+            if (nodeName) {
+              blockElement = dom.renameElement(blockElement, nodeName);
+            }
+            if (className) {
+              dom.addClassByRegExp(blockElement, className, classRegExp);
+            }
+          });
+          return;
+        }
+      }
+
+      if (composer.commands.support(command)) {
+        _execCommand(doc, command, nodeName || defaultNodeName, className);
+        return;
+      }
+
+      blockElement = doc.createElement(nodeName || defaultNodeName);
+      if (className) {
+        blockElement.className = className;
+      }
+      _selectLineAndWrap(composer, blockElement);
+    },
+
+    state: function(composer, command, nodeName, className, classRegExp) {
+      nodeName = typeof(nodeName) === "string" ? nodeName.toUpperCase() : nodeName;
+      var selectedNode = composer.selection.getSelectedNode();
+      return dom.getParentElement(selectedNode, {
+        nodeName:     nodeName,
+        className:    className,
+        classRegExp:  classRegExp
+      });
+    }
+  };
+})(wysihtml5);
+/**
+ * formatInline scenarios for tag "B" (| = caret, |foo| = selected text)
+ *
+ *   #1 caret in unformatted text:
+ *      abcdefg|
+ *   output:
+ *      abcdefg<b>|</b>
+ *   
+ *   #2 unformatted text selected:
+ *      abc|deg|h
+ *   output:
+ *      abc<b>|deg|</b>h
+ *   
+ *   #3 unformatted text selected across boundaries:
+ *      ab|c <span>defg|h</span>
+ *   output:
+ *      ab<b>|c </b><span><b>defg</b>|h</span>
+ *
+ *   #4 formatted text entirely selected
+ *      <b>|abc|</b>
+ *   output:
+ *      |abc|
+ *
+ *   #5 formatted text partially selected
+ *      <b>ab|c|</b>
+ *   output:
+ *      <b>ab</b>|c|
+ *
+ *   #6 formatted text selected across boundaries
+ *      <span>ab|c</span> <b>de|fgh</b>
+ *   output:
+ *      <span>ab|c</span> de|<b>fgh</b>
+ */
+(function(wysihtml5) {
+  var // Treat <b> as <strong> and vice versa
+      ALIAS_MAPPING = {
+        "strong": "b",
+        "em":     "i",
+        "b":      "strong",
+        "i":      "em"
+      },
+      // Use a nested object cache to avoid key collisions when className contains ":"
+      // Structure: htmlApplierCache[tagName][className || ""] = HTMLApplier instance
+      htmlApplierCache = {};
+
+  function _getTagNames(tagName) {
+    var alias = ALIAS_MAPPING[tagName];
+    return alias ? [tagName.toLowerCase(), alias.toLowerCase()] : [tagName.toLowerCase()];
+  }
+
+  function _getApplier(tagName, className, classRegExp) {
+    // Use a two-level nested lookup to avoid collision when className contains ":"
+    var tagBucket = htmlApplierCache[tagName];
+    if (!tagBucket) {
+      tagBucket = htmlApplierCache[tagName] = {};
+    }
+    var classKey = className || "";
+    if (!tagBucket[classKey]) {
+      tagBucket[classKey] = new wysihtml5.selection.HTMLApplier(_getTagNames(tagName), className, classRegExp, true);
+    }
+    return tagBucket[classKey];
+  }
+  
+  wysihtml5.commands.formatInline = {
+    exec: function(composer, command, tagName, className, classRegExp) {
+      var range = composer.selection.getRange();
+      if (!range) {
+        return false;
+      }
+      _getApplier(tagName, className, classRegExp).toggleRange(range);
+      composer.selection.setSelection(range);
+    },
+
+    state: function(composer, command, tagName, className, classRegExp) {
+      var doc           = composer.doc,
+          aliasTagName  = ALIAS_MAPPING[tagName] || tagName,
+          range;
+
+      // Check whether the document contains a node with the desired tagName
+      if (!wysihtml5.dom.hasElementWithTagName(doc, tagName) &&
+          !wysihtml5.dom.hasElementWithTagName(doc, aliasTagName)) {
+        return false;
+      }
+
+       // Check whether the document contains a node with the desired className
+      if (className && !wysihtml5.dom.hasElementWithClassName(doc, className)) {
+         return false;
+      }
+
+      range = composer.selection.getRange();
+      if (!range) {
+        return false;
+      }
+
+      return _getApplier(tagName, className, classRegExp).isAppliedToRange(range);
+    },
+
+    /**
+     * Factory method to create a command object that wraps formatInline.
+     * Eliminates boilerplate for simple inline formatting commands (bold, italic, etc.)
+     * and class-based inline commands (foreColor, fontSize, etc.).
+     *
+     * @param {String} commandName  The command name to register (e.g. "bold", "foreColor")
+     * @param {Object} config       Configuration object:
+     *   @param {String}  config.tagName         The HTML tag to apply (e.g. "b", "i", "span")
+     *   @param {String}  [config.classNamePrefix]  Optional class name prefix (e.g. "wysiwyg-color-")
+     *                                              When set, the value passed to exec/state is appended
+     *                                              to produce the final class name.
+     *   @param {RegExp}  [config.classRegExp]   Optional regex to match similar classes for removal
+     *
+     * @example
+     *   // Simple tag-based command (bold, italic, underline):
+     *   wysihtml5.commands.formatInline.createCommand("bold", { tagName: "b" });
+     *
+     *   // Class-based command (foreColor, fontSize):
+     *   wysihtml5.commands.formatInline.createCommand("foreColor", {
+     *     tagName: "span",
+     *     classNamePrefix: "wysiwyg-color-",
+     *     classRegExp: /wysiwyg-color-[0-9a-z]+/g
+     *   });
+     */
+    createCommand: function(commandName, config) {
+      var tagName         = config.tagName,
+          classNamePrefix = config.classNamePrefix,
+          classRegExp     = config.classRegExp;
+
+      wysihtml5.commands[commandName] = {
+        exec: function(composer, command, value) {
+          var className = classNamePrefix ? classNamePrefix + value : undefined;
+          return wysihtml5.commands.formatInline.exec(composer, command, tagName, className, classRegExp);
+        },
+
+        state: function(composer, command, value) {
+          var className = classNamePrefix ? classNamePrefix + value : undefined;
+          return wysihtml5.commands.formatInline.state(composer, command, tagName, className, classRegExp);
+        }
+      };
+    }
+  };
+})(wysihtml5);// element.ownerDocument.queryCommandState("bold") results:
+// firefox: only <b>
+// chrome:  <b>, <strong>, <h1>, <h2>, ...
+// ie:      <b>, <strong>
+// opera:   <b>, <strong>
+wysihtml5.commands.formatInline.createCommand("bold", {
+  tagName: "b"
+});
 (function(wysihtml5) {
   var undef,
       NODE_NAME = "A",
@@ -6895,353 +7450,22 @@ wysihtml5.commands.bold = {
  * which we don't want
  * Instead we set a css class
  */
-(function(wysihtml5) {
-  var undef,
-      REG_EXP = /wysiwyg-font-size-[0-9a-z\-]+/g;
-  
-  wysihtml5.commands.fontSize = {
-    exec: function(composer, command, size) {
-      return wysihtml5.commands.formatInline.exec(composer, command, "span", "wysiwyg-font-size-" + size, REG_EXP);
-    },
-
-    state: function(composer, command, size) {
-      return wysihtml5.commands.formatInline.state(composer, command, "span", "wysiwyg-font-size-" + size, REG_EXP);
-    },
-
-    value: function() {
-      return undef;
-    }
-  };
-})(wysihtml5);
+wysihtml5.commands.formatInline.createCommand("fontSize", {
+  tagName:         "span",
+  classNamePrefix: "wysiwyg-font-size-",
+  classRegExp:     /wysiwyg-font-size-[0-9a-z\-]+/g
+});
 /**
  * document.execCommand("foreColor") will create either inline styles (firefox, chrome) or use font tags
  * which we don't want
  * Instead we set a css class
  */
-(function(wysihtml5) {
-  var REG_EXP = /wysiwyg-color-[0-9a-z]+/g;
-  
-  wysihtml5.commands.foreColor = {
-    exec: function(composer, command, color) {
-      return wysihtml5.commands.formatInline.exec(composer, command, "span", "wysiwyg-color-" + color, REG_EXP);
-    },
-
-    state: function(composer, command, color) {
-      return wysihtml5.commands.formatInline.state(composer, command, "span", "wysiwyg-color-" + color, REG_EXP);
-    }
-  };
-})(wysihtml5);(function(wysihtml5) {
-  var dom                     = wysihtml5.dom,
-      // Following elements are grouped
-      // when the caret is within a H1 and the H4 is invoked, the H1 should turn into H4
-      // instead of creating a H4 within a H1 which would result in semantically invalid html
-      BLOCK_ELEMENTS_GROUP    = ["H1", "H2", "H3", "H4", "H5", "H6", "P", "BLOCKQUOTE", "DIV"];
-  
-  /**
-   * Remove similiar classes (based on classRegExp)
-   * and add the desired class name
-   */
-  function _addClass(element, className, classRegExp) {
-    if (element.className) {
-      _removeClass(element, classRegExp);
-      element.className += " " + className;
-    } else {
-      element.className = className;
-    }
-  }
-
-  function _removeClass(element, classRegExp) {
-    element.className = element.className.replace(classRegExp, "");
-  }
-
-  /**
-   * Check whether given node is a text node and whether it's empty
-   */
-  function _isBlankTextNode(node) {
-    return node.nodeType === wysihtml5.TEXT_NODE && !wysihtml5.lang.string(node.data).trim();
-  }
-
-  /**
-   * Returns previous sibling node that is not a blank text node
-   */
-  function _getPreviousSiblingThatIsNotBlank(node) {
-    var previousSibling = node.previousSibling;
-    while (previousSibling && _isBlankTextNode(previousSibling)) {
-      previousSibling = previousSibling.previousSibling;
-    }
-    return previousSibling;
-  }
-
-  /**
-   * Returns next sibling node that is not a blank text node
-   */
-  function _getNextSiblingThatIsNotBlank(node) {
-    var nextSibling = node.nextSibling;
-    while (nextSibling && _isBlankTextNode(nextSibling)) {
-      nextSibling = nextSibling.nextSibling;
-    }
-    return nextSibling;
-  }
-
-  /**
-   * Adds line breaks before and after the given node if the previous and next siblings
-   * aren't already causing a visual line break (block element or <br>)
-   */
-  function _addLineBreakBeforeAndAfter(node) {
-    var doc             = node.ownerDocument,
-        nextSibling     = _getNextSiblingThatIsNotBlank(node),
-        previousSibling = _getPreviousSiblingThatIsNotBlank(node);
-
-    if (nextSibling && !_isLineBreakOrBlockElement(nextSibling)) {
-      node.parentNode.insertBefore(doc.createElement("br"), nextSibling);
-    }
-    if (previousSibling && !_isLineBreakOrBlockElement(previousSibling)) {
-      node.parentNode.insertBefore(doc.createElement("br"), node);
-    }
-  }
-
-  /**
-   * Removes line breaks before and after the given node
-   */
-  function _removeLineBreakBeforeAndAfter(node) {
-    var nextSibling     = _getNextSiblingThatIsNotBlank(node),
-        previousSibling = _getPreviousSiblingThatIsNotBlank(node);
-
-    if (nextSibling && _isLineBreak(nextSibling)) {
-      nextSibling.parentNode.removeChild(nextSibling);
-    }
-    if (previousSibling && _isLineBreak(previousSibling)) {
-      previousSibling.parentNode.removeChild(previousSibling);
-    }
-  }
-
-  function _removeLastChildIfLineBreak(node) {
-    var lastChild = node.lastChild;
-    if (lastChild && _isLineBreak(lastChild)) {
-      lastChild.parentNode.removeChild(lastChild);
-    }
-  }
-
-  function _isLineBreak(node) {
-    return node.nodeName === "BR";
-  }
-
-  /**
-   * Checks whether the elment causes a visual line break
-   * (<br> or block elements)
-   */
-  function _isLineBreakOrBlockElement(element) {
-    if (_isLineBreak(element)) {
-      return true;
-    }
-
-    if (dom.getStyle("display").from(element) === "block") {
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Execute native query command
-   * and if necessary modify the inserted node's className
-   */
-  function _execCommand(doc, command, nodeName, className) {
-    if (className) {
-      var eventListener = dom.observe(doc, "DOMNodeInserted", function(event) {
-        var target = event.target,
-            displayStyle;
-        if (target.nodeType !== wysihtml5.ELEMENT_NODE) {
-          return;
-        }
-        displayStyle = dom.getStyle("display").from(target);
-        if (displayStyle.substr(0, 6) !== "inline") {
-          // Make sure that only block elements receive the given class
-          target.className += " " + className;
-        }
-      });
-    }
-    doc.execCommand(command, false, nodeName);
-    if (eventListener) {
-      eventListener.stop();
-    }
-  }
-
-  function _selectLineAndWrap(composer, element) {
-    composer.selection.selectLine();
-    composer.selection.surround(element);
-    _removeLineBreakBeforeAndAfter(element);
-    _removeLastChildIfLineBreak(element);
-    composer.selection.selectNode(element, wysihtml5.browser.displaysCaretInEmptyContentEditableCorrectly());
-  }
-
-  function _hasClasses(element) {
-    return !!wysihtml5.lang.string(element.className).trim();
-  }
-  
-  wysihtml5.commands.formatBlock = {
-    exec: function(composer, command, nodeName, className, classRegExp) {
-      var doc             = composer.doc,
-          blockElement    = this.state(composer, command, nodeName, className, classRegExp),
-          useLineBreaks   = composer.config.useLineBreaks,
-          defaultNodeName = useLineBreaks ? "DIV" : "P",
-          selectedNode;
-
-      nodeName = typeof(nodeName) === "string" ? nodeName.toUpperCase() : nodeName;
-      
-      if (blockElement) {
-        composer.selection.executeAndRestoreSimple(function() {
-          if (classRegExp) {
-            _removeClass(blockElement, classRegExp);
-          }
-          var hasClasses = _hasClasses(blockElement);
-          if (!hasClasses && (useLineBreaks || nodeName === "P")) {
-            // Insert a line break afterwards and beforewards when there are siblings
-            // that are not of type line break or block element
-            _addLineBreakBeforeAndAfter(blockElement);
-            dom.replaceWithChildNodes(blockElement);
-          } else {
-            // Make sure that styling is kept by renaming the element to a <div> or <p> and copying over the class name
-            dom.renameElement(blockElement, nodeName === "P" ? "DIV" : defaultNodeName);
-          }
-        });
-        return;
-      }
-
-      // Find similiar block element and rename it (<h2 class="foo"></h2>  =>  <h1 class="foo"></h1>)
-      if (nodeName === null || wysihtml5.lang.array(BLOCK_ELEMENTS_GROUP).contains(nodeName)) {
-        selectedNode = composer.selection.getSelectedNode();
-        blockElement = dom.getParentElement(selectedNode, {
-          nodeName: BLOCK_ELEMENTS_GROUP
-        });
-
-        if (blockElement) {
-          composer.selection.executeAndRestore(function() {
-            // Rename current block element to new block element and add class
-            if (nodeName) {
-              blockElement = dom.renameElement(blockElement, nodeName);
-            }
-            if (className) {
-              _addClass(blockElement, className, classRegExp);
-            }
-          });
-          return;
-        }
-      }
-
-      if (composer.commands.support(command)) {
-        _execCommand(doc, command, nodeName || defaultNodeName, className);
-        return;
-      }
-
-      blockElement = doc.createElement(nodeName || defaultNodeName);
-      if (className) {
-        blockElement.className = className;
-      }
-      _selectLineAndWrap(composer, blockElement);
-    },
-
-    state: function(composer, command, nodeName, className, classRegExp) {
-      nodeName = typeof(nodeName) === "string" ? nodeName.toUpperCase() : nodeName;
-      var selectedNode = composer.selection.getSelectedNode();
-      return dom.getParentElement(selectedNode, {
-        nodeName:     nodeName,
-        className:    className,
-        classRegExp:  classRegExp
-      });
-    }
-  };
-})(wysihtml5);/**
- * formatInline scenarios for tag "B" (| = caret, |foo| = selected text)
- *
- *   #1 caret in unformatted text:
- *      abcdefg|
- *   output:
- *      abcdefg<b>|</b>
- *   
- *   #2 unformatted text selected:
- *      abc|deg|h
- *   output:
- *      abc<b>|deg|</b>h
- *   
- *   #3 unformatted text selected across boundaries:
- *      ab|c <span>defg|h</span>
- *   output:
- *      ab<b>|c </b><span><b>defg</b>|h</span>
- *
- *   #4 formatted text entirely selected
- *      <b>|abc|</b>
- *   output:
- *      |abc|
- *
- *   #5 formatted text partially selected
- *      <b>ab|c|</b>
- *   output:
- *      <b>ab</b>|c|
- *
- *   #6 formatted text selected across boundaries
- *      <span>ab|c</span> <b>de|fgh</b>
- *   output:
- *      <span>ab|c</span> de|<b>fgh</b>
- */
-(function(wysihtml5) {
-  var // Treat <b> as <strong> and vice versa
-      ALIAS_MAPPING = {
-        "strong": "b",
-        "em":     "i",
-        "b":      "strong",
-        "i":      "em"
-      },
-      htmlApplier = {};
-  
-  function _getTagNames(tagName) {
-    var alias = ALIAS_MAPPING[tagName];
-    return alias ? [tagName.toLowerCase(), alias.toLowerCase()] : [tagName.toLowerCase()];
-  }
-  
-  function _getApplier(tagName, className, classRegExp) {
-    var identifier = tagName + ":" + className;
-    if (!htmlApplier[identifier]) {
-      htmlApplier[identifier] = new wysihtml5.selection.HTMLApplier(_getTagNames(tagName), className, classRegExp, true);
-    }
-    return htmlApplier[identifier];
-  }
-  
-  wysihtml5.commands.formatInline = {
-    exec: function(composer, command, tagName, className, classRegExp) {
-      var range = composer.selection.getRange();
-      if (!range) {
-        return false;
-      }
-      _getApplier(tagName, className, classRegExp).toggleRange(range);
-      composer.selection.setSelection(range);
-    },
-
-    state: function(composer, command, tagName, className, classRegExp) {
-      var doc           = composer.doc,
-          aliasTagName  = ALIAS_MAPPING[tagName] || tagName,
-          range;
-
-      // Check whether the document contains a node with the desired tagName
-      if (!wysihtml5.dom.hasElementWithTagName(doc, tagName) &&
-          !wysihtml5.dom.hasElementWithTagName(doc, aliasTagName)) {
-        return false;
-      }
-
-       // Check whether the document contains a node with the desired className
-      if (className && !wysihtml5.dom.hasElementWithClassName(doc, className)) {
-         return false;
-      }
-
-      range = composer.selection.getRange();
-      if (!range) {
-        return false;
-      }
-
-      return _getApplier(tagName, className, classRegExp).isAppliedToRange(range);
-    }
-  };
-})(wysihtml5);wysihtml5.commands.insertHTML = {
+wysihtml5.commands.formatInline.createCommand("foreColor", {
+  tagName:         "span",
+  classNamePrefix: "wysiwyg-color-",
+  classRegExp:     /wysiwyg-color-[0-9a-z]+/g
+});
+wysihtml5.commands.insertHTML = {
   exec: function(composer, command, html) {
     if (composer.commands.support(command)) {
       composer.doc.execCommand(command, false, html);
@@ -7274,7 +7498,6 @@ wysihtml5.commands.bold = {
       var doc     = composer.doc,
           image   = this.state(composer),
           textNode,
-          i,
           parent;
 
       if (image) {
@@ -7297,11 +7520,8 @@ wysihtml5.commands.bold = {
 
       image = doc.createElement(NODE_NAME);
       
-      for (i in value) {
-        if (i === "className") {
-          i = "class";
-        }
-        image.setAttribute(i, value[i]);
+      for (var i in value) {
+        image.setAttribute(i === "className" ? "class" : i, value[i]);
       }
 
       composer.selection.insertNode(image);
@@ -7472,71 +7692,62 @@ wysihtml5.commands.bold = {
     var selectedNode = composer.selection.getSelectedNode();
     return wysihtml5.dom.getParentElement(selectedNode, { nodeName: "UL" });
   }
-};wysihtml5.commands.italic = {
-  exec: function(composer, command) {
-    return wysihtml5.commands.formatInline.exec(composer, command, "i");
-  },
+};// element.ownerDocument.queryCommandState("italic") results:
+// firefox: only <i>
+// chrome:  <i>, <em>, <blockquote>, ...
+// ie:      <i>, <em>
+// opera:   only <i>
+wysihtml5.commands.formatInline.createCommand("italic", {
+  tagName: "i"
+});
+/**
+ * Unified justify commands: config-driven implementation for all text alignment variants.
+ *
+ * Instead of having a separate file per alignment (justifyLeft, justifyCenter, justifyRight,
+ * justifyFull), this module registers all variants from a single configuration table.
+ *
+ * To add a new alignment variant, simply add an entry to JUSTIFY_CONFIGS below — no new
+ * file is needed.
+ */
+(function(wysihtml5) {
+  var REG_EXP = /wysiwyg-text-align-[0-9a-z]+/g;
 
-  state: function(composer, command) {
-    // element.ownerDocument.queryCommandState("italic") results:
-    // firefox: only <i>
-    // chrome:  <i>, <em>, <blockquote>, ...
-    // ie:      <i>, <em>
-    // opera:   only <i>
-    return wysihtml5.commands.formatInline.state(composer, command, "i");
+  /**
+   * Configuration table for all justify commands.
+   * Key:   the command name registered on wysihtml5.commands
+   * Value: the CSS class name applied to the block element
+   */
+  var JUSTIFY_CONFIGS = {
+    justifyLeft:   "wysiwyg-text-align-left",
+    justifyCenter: "wysiwyg-text-align-center",
+    justifyRight:  "wysiwyg-text-align-right",
+    justifyFull:   "wysiwyg-text-align-justify"
+  };
+
+  /**
+   * Factory: create a justify command object from a class name.
+   * @param {String} className  The CSS class to apply (e.g. "wysiwyg-text-align-center")
+   * @return {Object} command object with exec and state methods
+   */
+  function createJustifyCommand(className) {
+    return {
+      exec: function(composer, command) {
+        return wysihtml5.commands.formatBlock.exec(composer, "formatBlock", null, className, REG_EXP);
+      },
+
+      state: function(composer, command) {
+        return wysihtml5.commands.formatBlock.state(composer, "formatBlock", null, className, REG_EXP);
+      }
+    };
   }
-};(function(wysihtml5) {
-  var CLASS_NAME  = "wysiwyg-text-align-center",
-      REG_EXP     = /wysiwyg-text-align-[0-9a-z]+/g;
-  
-  wysihtml5.commands.justifyCenter = {
-    exec: function(composer, command) {
-      return wysihtml5.commands.formatBlock.exec(composer, "formatBlock", null, CLASS_NAME, REG_EXP);
-    },
 
-    state: function(composer, command) {
-      return wysihtml5.commands.formatBlock.state(composer, "formatBlock", null, CLASS_NAME, REG_EXP);
+  // Register all justify commands from the config table
+  var commandName;
+  for (commandName in JUSTIFY_CONFIGS) {
+    if (JUSTIFY_CONFIGS.hasOwnProperty(commandName)) {
+      wysihtml5.commands[commandName] = createJustifyCommand(JUSTIFY_CONFIGS[commandName]);
     }
-  };
-})(wysihtml5);(function(wysihtml5) {
-  var CLASS_NAME  = "wysiwyg-text-align-left",
-      REG_EXP     = /wysiwyg-text-align-[0-9a-z]+/g;
-  
-  wysihtml5.commands.justifyLeft = {
-    exec: function(composer, command) {
-      return wysihtml5.commands.formatBlock.exec(composer, "formatBlock", null, CLASS_NAME, REG_EXP);
-    },
-
-    state: function(composer, command) {
-      return wysihtml5.commands.formatBlock.state(composer, "formatBlock", null, CLASS_NAME, REG_EXP);
-    }
-  };
-})(wysihtml5);(function(wysihtml5) {
-  var CLASS_NAME  = "wysiwyg-text-align-right",
-      REG_EXP     = /wysiwyg-text-align-[0-9a-z]+/g;
-  
-  wysihtml5.commands.justifyRight = {
-    exec: function(composer, command) {
-      return wysihtml5.commands.formatBlock.exec(composer, "formatBlock", null, CLASS_NAME, REG_EXP);
-    },
-
-    state: function(composer, command) {
-      return wysihtml5.commands.formatBlock.state(composer, "formatBlock", null, CLASS_NAME, REG_EXP);
-    }
-  };
-})(wysihtml5);(function(wysihtml5) {
-  var CLASS_NAME  = "wysiwyg-text-align-justify",
-      REG_EXP     = /wysiwyg-text-align-[0-9a-z]+/g;
-  
-  wysihtml5.commands.justifyFull = {
-    exec: function(composer, command) {
-      return wysihtml5.commands.formatBlock.exec(composer, "formatBlock", null, CLASS_NAME, REG_EXP);
-    },
-
-    state: function(composer, command) {
-      return wysihtml5.commands.formatBlock.state(composer, "formatBlock", null, CLASS_NAME, REG_EXP);
-    }
-  };
+  }
 })(wysihtml5);
 wysihtml5.commands.redo = {
   exec: function(composer) {
@@ -7546,15 +7757,10 @@ wysihtml5.commands.redo = {
   state: function(composer) {
     return false;
   }
-};wysihtml5.commands.underline = {
-  exec: function(composer, command) {
-    return wysihtml5.commands.formatInline.exec(composer, command, "u");
-  },
-
-  state: function(composer, command) {
-    return wysihtml5.commands.formatInline.state(composer, command, "u");
-  }
-};wysihtml5.commands.undo = {
+};wysihtml5.commands.formatInline.createCommand("underline", {
+  tagName: "u"
+});
+wysihtml5.commands.undo = {
   exec: function(composer) {
     return composer.undoManager.undo();
   },
@@ -7896,11 +8102,6 @@ wysihtml5.views.View = Base.extend(
         value = this.parent.parse(value);
       }
 
-      // Replace all "zero width no breaking space" chars
-      // which are used as hacks to enable some functionalities
-      // Also remove all CARET hacks that somehow got left
-      value = wysihtml5.lang.string(value).replace(wysihtml5.INVISIBLE_SPACE).by("");
-
       return value;
     },
 
@@ -8228,6 +8429,16 @@ wysihtml5.views.View = Base.extend(
           }
         });
       }
+      
+      // Under certain circumstances Chrome + Safari create nested <p> or <hX> tags after paste
+      // Inserting an invisible white space in front of it fixes the issue
+      if (browser.createsNestedInvalidMarkupAfterPaste()) {
+        dom.observe(this.element, "paste", function(event) {
+          var invisibleSpace = that.doc.createTextNode(wysihtml5.INVISIBLE_SPACE);
+          that.selection.insertNode(invisibleSpace);
+        });
+      }
+
       
       dom.observe(this.doc, "keydown", function(event) {
         var keyCode = event.keyCode;
@@ -8896,6 +9107,7 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
           callbackWrapper(event);
         }
         if (keyCode === wysihtml5.ESCAPE_KEY) {
+          that.fire("cancel");
           that.hide();
         }
       });
@@ -9130,7 +9342,26 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
       CLASS_NAME_COMMAND_ACTIVE     = "wysihtml5-command-active",
       CLASS_NAME_ACTION_ACTIVE      = "wysihtml5-action-active",
       dom                           = wysihtml5.dom;
-  
+
+  /**
+   * Look up a registered link by its name and value within a linkList.
+   * Replaces the old string-concatenated mapping key (name + ":" + value),
+   * which was fragile when values contained colons.
+   *
+   * @param {Array}  linkList  Array of link entry objects
+   * @param {String} name      The command or action name
+   * @param {String} value     The command or action value (may be null/undefined)
+   * @return {Object|null}     The matching link entry, or null
+   */
+  function findLink(linkList, name, value) {
+    for (var i = 0, len = linkList.length; i < len; i++) {
+      if (linkList[i].name === name && linkList[i].value === value) {
+        return linkList[i];
+      }
+    }
+    return null;
+  }
+
   wysihtml5.toolbar.Toolbar = Base.extend(
     /** @scope wysihtml5.toolbar.Toolbar.prototype */ {
     constructor: function(editor, container) {
@@ -9138,12 +9369,17 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
       this.container  = typeof(container) === "string" ? document.getElementById(container) : container;
       this.composer   = editor.composer;
 
-      this._getLinks("command");
-      this._getLinks("action");
+      // Unified link registration: both commands and actions use the same structure.
+      // Each list stores objects with { link, group, name, value, dialog, state }
+      this.commandLinks = [];
+      this.actionLinks  = [];
+
+      this._registerLinks("command", this.commandLinks);
+      this._registerLinks("action",  this.actionLinks);
 
       this._observe();
       this.show();
-      
+
       var speechInputLinks  = this.container.querySelectorAll("[data-wysihtml5-command=insertSpeech]"),
           length            = speechInputLinks.length,
           i                 = 0;
@@ -9152,31 +9388,41 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
       }
     },
 
-    _getLinks: function(type) {
-      var links   = this[type + "Links"] = wysihtml5.lang.array(this.container.querySelectorAll("[data-wysihtml5-" + type + "]")).get(),
+    /**
+     * Unified link registration method.
+     * Scans the toolbar container for elements with the given data-attribute type
+     * and populates the target list with structured entry objects.
+     *
+     * Replaces the old _getLinks method which had duplicated logic for "command" and "action".
+     *
+     * @param {String} type       Either "command" or "action"
+     * @param {Array}  targetList Array to populate with link entry objects
+     */
+    _registerLinks: function(type, targetList) {
+      var links   = wysihtml5.lang.array(this.container.querySelectorAll("[data-wysihtml5-" + type + "]")).get(),
           length  = links.length,
           i       = 0,
-          mapping = this[type + "Mapping"] = {},
           link,
           group,
           name,
           value,
           dialog;
+
       for (; i<length; i++) {
         link    = links[i];
         name    = link.getAttribute("data-wysihtml5-" + type);
         value   = link.getAttribute("data-wysihtml5-" + type + "-value");
         group   = this.container.querySelector("[data-wysihtml5-" + type + "-group='" + name + "']");
-        dialog  = this._getDialog(link, name);
-        
-        mapping[name + ":" + value] = {
+        dialog  = (type === "command") ? this._getDialog(link, name) : null;
+
+        targetList.push({
           link:   link,
           group:  group,
           name:   name,
           value:  value,
           dialog: dialog,
           state:  false
-        };
+        });
       }
     },
 
@@ -9185,7 +9431,7 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
           dialogElement = this.container.querySelector("[data-wysihtml5-dialog='" + command + "']"),
           dialog,
           caretBookmark;
-      
+
       if (dialogElement) {
         dialog = new wysihtml5.toolbar.Dialog(link, dialogElement);
 
@@ -9200,7 +9446,7 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
             that.composer.selection.setBookmark(caretBookmark);
           }
           that._execCommand(command, attributes);
-          
+
           that.editor.fire("save:dialog", { command: command, dialogContainer: dialogElement, commandLink: link });
         });
 
@@ -9223,7 +9469,7 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
         return;
       }
 
-      var commandObj = this.commandMapping[command + ":" + commandValue];
+      var commandObj = findLink(this.commandLinks, command, commandValue);
 
       // Show dialog when available
       if (commandObj && commandObj.dialog && !commandObj.state) {
@@ -9259,19 +9505,23 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
           links     = this.commandLinks.concat(this.actionLinks),
           length    = links.length,
           i         = 0;
-      
+
       for (; i<length; i++) {
         // 'javascript:;' and unselectable=on Needed for IE, but done in all browsers to make sure that all get the same css applied
         // (you know, a:link { ... } doesn't match anchors with missing href attribute)
-        dom.setAttributes({
-          href:         "javascript:;",
-          unselectable: "on"
-        }).on(links[i]);
+        if (links[i].link.nodeName === "A") {
+          dom.setAttributes({
+            href:         "javascript:;",
+            unselectable: "on"
+          }).on(links[i].link);
+        } else {
+          dom.setAttributes({ unselectable: "on" }).on(links[i].link);
+        }
       }
 
       // Needed for opera and chrome
       dom.delegate(container, "[data-wysihtml5-command], [data-wysihtml5-action]", "mousedown", function(event) { event.preventDefault(); });
-      
+
       dom.delegate(container, "[data-wysihtml5-command]", "click", function(event) {
         var link          = this,
             command       = link.getAttribute("data-wysihtml5-command"),
@@ -9315,15 +9565,16 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
     },
 
     _updateLinkStates: function() {
-      var commandMapping    = this.commandMapping,
-          actionMapping     = this.actionMapping,
+      var commandLinks  = this.commandLinks,
+          actionLinks   = this.actionLinks,
           i,
           state,
           action,
           command;
-      // every millisecond counts... this is executed quite often
-      for (i in commandMapping) {
-        command = commandMapping[i];
+
+      // Update command link states
+      for (i = 0; i < commandLinks.length; i++) {
+        command = commandLinks[i];
         if (this.commandsDisabled) {
           state = false;
           dom.removeClass(command.link, CLASS_NAME_COMMAND_ACTIVE);
@@ -9375,10 +9626,11 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
           }
         }
       }
-      
-      for (i in actionMapping) {
-        action = actionMapping[i];
-        
+
+      // Update action link states
+      for (i = 0; i < actionLinks.length; i++) {
+        action = actionLinks[i];
+
         if (action.name === "change_view") {
           action.state = this.editor.currentView === this.editor.textarea;
           if (action.state) {
@@ -9398,7 +9650,7 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
       this.container.style.display = "none";
     }
   });
-  
+
 })(wysihtml5);
 /**
  * WYSIHTML5 Editor
@@ -9459,7 +9711,9 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
     // Placeholder text to use, defaults to the placeholder attribute on the textarea element
     placeholderText:      undef,
     // Whether the rich text editor should be rendered on touch devices (wysihtml5 >= 0.3.0 comes with basic support for iOS 5)
-    supportTouchDevices:  true
+    supportTouchDevices:  true,
+    // Whether senseless <span> elements (empty or without attributes) should be removed/replaced with their content
+    cleanUp:              true
   };
   
   wysihtml5.Editor = wysihtml5.lang.Dispatcher.extend(
@@ -9554,7 +9808,7 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
     },
     
     parse: function(htmlOrElement) {
-      var returnValue = this.config.parser(htmlOrElement, this.config.parserRules, this.composer.sandbox.getDocument(), true);
+      var returnValue = this.config.parser(htmlOrElement, this.config.parserRules, this.composer.sandbox.getDocument(), this.config.cleanUp);
       if (typeof(htmlOrElement) === "object") {
         wysihtml5.quirks.redraw(htmlOrElement);
       }

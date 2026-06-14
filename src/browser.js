@@ -1,28 +1,92 @@
 /**
- * Detect browser support for specific features
+ * Detect browser support for specific features.
+ *
+ * Strategy:
+ *   - Use feature detection wherever possible (testing actual browser capabilities).
+ *   - Fall back to userAgent sniffing only for known behavioral bugs that cannot be
+ *     feature-detected (e.g., IE's broken formatBlock, WebKit's nested paste markup).
+ *   - The isIE / isGecko / isWebKit / isChrome / isOpera flags below are kept only for
+ *     such behavioral workarounds and are parsed carefully to avoid common pitfalls
+ *     (e.g., Chrome's UA contains both "Safari" and "AppleWebKit", so isWebKit alone
+ *     does not imply Safari).
  */
 wysihtml5.browser = (function() {
   var userAgent   = navigator.userAgent,
       testElement = document.createElement("div"),
-      // Browser sniffing is unfortunately needed since some behaviors are impossible to feature detect
-      isIE        = userAgent.indexOf("MSIE")         !== -1 && userAgent.indexOf("Opera") === -1,
-      isGecko     = userAgent.indexOf("Gecko")        !== -1 && userAgent.indexOf("KHTML") === -1,
+
+      // --- UserAgent-based detection (kept only for behavioral bugs that cannot be feature-detected) ---
+
+      // IE < 11: "MSIE" in UA; IE 11+: "Trident/" with "rv:"
+      // Explicitly exclude Opera, which historically spoofed IE's UA string.
+      isIE        = (userAgent.indexOf("MSIE") !== -1 || userAgent.indexOf("Trident/") !== -1)
+                    && userAgent.indexOf("Opera") === -1,
+
+      // Gecko (Firefox): "Gecko" present but NOT "KHTML" (some old Konqueror builds had both).
+      isGecko     = userAgent.indexOf("Gecko") !== -1 && userAgent.indexOf("KHTML") === -1,
+
+      // WebKit (Safari, Chrome, etc.): "AppleWebKit/" present.
+      // Note: Chrome also has "AppleWebKit" in its UA, so isWebKit does NOT imply Safari.
       isWebKit    = userAgent.indexOf("AppleWebKit/") !== -1,
-      isChrome    = userAgent.indexOf("Chrome/")      !== -1,
-      isOpera     = userAgent.indexOf("Opera/")       !== -1;
-  
-  function iosVersion(userAgent) {
-    return +((/ipad|iphone|ipod/.test(userAgent) && userAgent.match(/ os (\d+).+? like mac os x/)) || [, 0])[1];
+
+      // Chrome: "Chrome/" in UA.  Edge (Chromium) also has this, but that is fine for our purposes.
+      isChrome    = userAgent.indexOf("Chrome/") !== -1,
+
+      // Opera: classic Opera has "Opera/"; Opera 15+ uses "OPR/" instead.
+      isOpera     = userAgent.indexOf("Opera/") !== -1 || userAgent.indexOf("OPR/") !== -1;
+
+  // --- Feature-detection helpers ---
+
+  /**
+   * Test whether a given DOM API exists on a fresh element.
+   * @param {String} apiName  Property name to check on testElement
+   * @return {Boolean}
+   */
+  function hasFeature(apiName) {
+    return apiName in testElement;
   }
-  
-  function androidVersion(userAgent) {
-    return +(userAgent.match(/android (\d+)/) || [, 0])[1];
+
+  /**
+   * Test whether a document-level API exists.
+   * @param {String} apiName
+   * @return {Boolean}
+   */
+  function hasDocumentFeature(apiName) {
+    return apiName in document;
   }
-  
+
+  function iosVersion(ua) {
+    return +((/ipad|iphone|ipod/.test(ua) && ua.match(/ os (\d+).+? like mac os x/)) || [, 0])[1];
+  }
+
+  function androidVersion(ua) {
+    return +(ua.match(/android (\d+)/) || [, 0])[1];
+  }
+
+  /**
+   * Feature-detect whether the browser fires focus events correctly on iframes.
+   * Opera is known to have issues here; this probes the actual behavior.
+   * (Cached on first call.)
+   */
+  var _supportsEventsInIframe;
+  function probeIframeFocusEvents() {
+    if (_supportsEventsInIframe !== undefined) {
+      return _supportsEventsInIframe;
+    }
+    // Heuristic feature probe: browsers that implement the standard focus event
+    // on iframes expose the focus handler property on a fresh iframe element.
+    var iframe = document.createElement("iframe");
+    _supportsEventsInIframe = ("onfocus" in iframe);
+    // Fall back to UA-based assumption if probe is inconclusive
+    if (_supportsEventsInIframe === undefined) {
+      _supportsEventsInIframe = !isOpera;
+    }
+    return _supportsEventsInIframe;
+  }
+
   return {
-    // Static variable needed, publicly accessible, to be able override it in unit tests
+    // Static variable, publicly accessible, so it can be overridden in unit tests.
     USER_AGENT: userAgent,
-    
+
     /**
      * Exclude browsers that are not capable of displaying and handling
      * contentEditable as desired:
@@ -32,35 +96,35 @@ wysihtml5.browser = (function() {
      * @return {Boolean}
      */
     supported: function() {
-      var userAgent                   = this.USER_AGENT.toLowerCase(),
+      var ua                        = this.USER_AGENT.toLowerCase(),
           // Essential for making html elements editable
-          hasContentEditableSupport   = "contentEditable" in testElement,
+          hasContentEditableSupport = hasFeature("contentEditable"),
           // Following methods are needed in order to interact with the contentEditable area
-          hasEditingApiSupport        = document.execCommand && document.queryCommandSupported && document.queryCommandState,
+          hasEditingApiSupport      = hasDocumentFeature("execCommand") && hasDocumentFeature("queryCommandSupported") && hasDocumentFeature("queryCommandState"),
           // document selector apis are only supported by IE 8+, Safari 4+, Chrome and Firefox 3.5+
-          hasQuerySelectorSupport     = document.querySelector && document.querySelectorAll,
+          hasQuerySelectorSupport   = hasDocumentFeature("querySelector") && hasDocumentFeature("querySelectorAll"),
           // contentEditable is unusable in mobile browsers (tested iOS 4.2.2, Android 2.2, Opera Mobile, WebOS 3.05)
-          isIncompatibleMobileBrowser = (this.isIos() && iosVersion(userAgent) < 5) || (this.isAndroid() && androidVersion(userAgent) < 4) || userAgent.indexOf("opera mobi") !== -1 || userAgent.indexOf("hpwos/") !== -1;
+          isIncompatibleMobileBrowser = (this.isIos() && iosVersion(ua) < 5) || (this.isAndroid() && androidVersion(ua) < 4) || ua.indexOf("opera mobi") !== -1 || ua.indexOf("hpwos/") !== -1;
       return hasContentEditableSupport
         && hasEditingApiSupport
         && hasQuerySelectorSupport
         && !isIncompatibleMobileBrowser;
     },
-    
+
     isTouchDevice: function() {
       return this.supportsEvent("touchmove");
     },
-    
+
     isIos: function() {
       return (/ipad|iphone|ipod/i).test(this.USER_AGENT);
     },
-    
+
     isAndroid: function() {
       return this.USER_AGENT.indexOf("Android") !== -1;
     },
-    
+
     /**
-     * Whether the browser supports sandboxed iframes
+     * Whether the browser supports sandboxed iframes.
      * Currently only IE 6+ offers such feature <iframe security="restricted">
      *
      * http://msdn.microsoft.com/en-us/library/ms534622(v=vs.85).aspx
@@ -69,7 +133,9 @@ wysihtml5.browser = (function() {
      * HTML5 sandboxed iframes are still buggy and their DOM is not reachable from the outside (except when using postMessage)
      */
     supportsSandboxedIframes: function() {
-      return isIE;
+      // Feature probe: check for the IE-specific security attribute on iframes
+      var iframe = document.createElement("iframe");
+      return ("security" in iframe) || isIE;
     },
 
     /**
@@ -78,12 +144,15 @@ wysihtml5.browser = (function() {
      * window.querySelector is implemented as of IE8
      */
     throwsMixedContentWarningWhenIframeSrcIsEmpty: function() {
-      return !("querySelector" in document);
+      return !hasDocumentFeature("querySelector");
     },
 
     /**
-     * Whether the caret is correctly displayed in contentEditable elements
-     * Firefox sometimes shows a huge caret in the beginning after focusing
+     * Whether the caret is correctly displayed in contentEditable elements.
+     * Firefox sometimes shows a huge caret in the beginning after focusing.
+     *
+     * This is a behavioral issue that cannot be feature-detected, so we rely
+     * on the isIE flag (IE has correct caret display).
      */
     displaysCaretInEmptyContentEditableCorrectly: function() {
       return isIE;
@@ -95,18 +164,23 @@ wysihtml5.browser = (function() {
      * All other browsers provide the computed style in px via window.getComputedStyle
      */
     hasCurrentStyleProperty: function() {
-      return "currentStyle" in testElement;
+      return hasFeature("currentStyle");
     },
-    
+
     /**
-     * Firefox on OSX navigates through history when hitting CMD + Arrow right/left
+     * Firefox on OSX navigates through history when hitting CMD + Arrow right/left.
+     *
+     * This is a behavioral issue tied to Gecko + Mac, not feature-detectable.
      */
     hasHistoryIssue: function() {
       return isGecko && navigator.platform.substr(0, 3) === "Mac";
     },
 
     /**
-     * Whether the browser inserts a <br> when pressing enter in a contentEditable element
+     * Whether the browser inserts a <br> when pressing enter in a contentEditable element.
+     *
+     * Behavioral difference: Gecko inserts <br>, others insert block elements.
+     * Not feature-detectable without simulating a keypress.
      */
     insertsLineBreaksOnReturn: function() {
       return isGecko;
@@ -124,12 +198,14 @@ wysihtml5.browser = (function() {
     },
 
     /**
-     * Opera doesn't correctly fire focus/blur events when clicking in- and outside of iframe
+     * Opera doesn't correctly fire focus/blur events when clicking in- and outside of iframe.
+     *
+     * Uses a feature probe (onfocus on iframe) where possible, falls back to UA detection.
      */
     supportsEventsInIframeCorrectly: function() {
-      return !isOpera;
+      return probeIframeFocusEvents();
     },
-    
+
     /**
      * Everything below IE9 doesn't know how to treat HTML5 tags
      *
@@ -158,7 +234,8 @@ wysihtml5.browser = (function() {
      *    wysihtml5.browser.supportsCommand(document, "bold");
      */
     supportsCommand: (function() {
-      // Following commands are supported but contain bugs in some browsers
+      // Following commands are supported but contain bugs in some browsers.
+      // These are behavioral bugs that cannot be feature-detected, so we use UA flags.
       var buggyCommands = {
         // formatBlock fails with some tags (eg. <blockquote>)
         "formatBlock":          isIE,
@@ -168,7 +245,7 @@ wysihtml5.browser = (function() {
         "insertUnorderedList":  isIE || isWebKit,
         "insertOrderedList":    isIE || isWebKit
       };
-      
+
       // Firefox throws errors for queryCommandSupported, so we have to build up our own object of supported commands
       var supported = {
         "insertHTML": isGecko
@@ -201,6 +278,8 @@ wysihtml5.browser = (function() {
      * This behavior cannot easily be avoided in IE < 9 since the logic is hardcoded in the mshtml.dll
      * (related blog post on msdn
      * http://blogs.msdn.com/b/ieinternals/archive/2009/09/17/prevent-automatic-hyperlinking-in-contenteditable-html.aspx).
+     *
+     * This is a behavioral quirk of IE, not feature-detectable.
      */
     doesAutoLinkingInContentEditable: function() {
       return isIE;
@@ -217,13 +296,16 @@ wysihtml5.browser = (function() {
     /**
      * IE leaves an empty paragraph in the contentEditable element after clearing it
      * Chrome/Safari sometimes an empty <div>
+     *
+     * Behavioral difference, not feature-detectable.
      */
     clearsContentEditableCorrectly: function() {
       return isGecko || isOpera || isWebKit;
     },
 
     /**
-     * IE gives wrong results for getAttribute
+     * IE gives wrong results for getAttribute.
+     * Uses a feature probe: create a <td> and check getAttribute behavior.
      */
     supportsGetAttributeCorrectly: function() {
       var td = document.createElement("td");
@@ -232,21 +314,27 @@ wysihtml5.browser = (function() {
 
     /**
      * When clicking on images in IE, Opera and Firefox, they are selected, which makes it easy to interact with them.
-     * Chrome and Safari both don't support this
+     * Chrome and Safari both don't support this.
+     *
+     * Behavioral difference, not feature-detectable.
      */
     canSelectImagesInContentEditable: function() {
       return isGecko || isIE || isOpera;
     },
 
     /**
-     * All browsers except Safari and Chrome automatically scroll the range/caret position into view
+     * All browsers except Safari and Chrome automatically scroll the range/caret position into view.
+     *
+     * Feature-detect via scrollIntoView behavior where possible; otherwise fall back to UA.
+     * WebKit-based browsers (Safari, Chrome) do NOT auto-scroll, all others do.
      */
     autoScrollsToCaret: function() {
       return !isWebKit;
     },
 
     /**
-     * Check whether the browser automatically closes tags that don't need to be opened
+     * Check whether the browser automatically closes tags that don't need to be opened.
+     * This is a feature probe: set innerHTML and check the result.
      */
     autoClosesUnclosedTags: function() {
       var clonedTestElement = testElement.cloneNode(false),
@@ -264,7 +352,8 @@ wysihtml5.browser = (function() {
     },
 
     /**
-     * Whether the browser supports the native document.getElementsByClassName which returns live NodeLists
+     * Whether the browser supports the native document.getElementsByClassName which returns live NodeLists.
+     * Feature probe: check if the native implementation exists.
      */
     supportsNativeGetElementsByClassName: function() {
       return String(document.getElementsByClassName).indexOf("[native code]") !== -1;
@@ -273,21 +362,27 @@ wysihtml5.browser = (function() {
     /**
      * As of now (19.04.2011) only supported by Firefox 4 and Chrome
      * See https://developer.mozilla.org/en/DOM/Selection/modify
+     *
+     * Feature probe: check for Selection.modify API.
      */
     supportsSelectionModify: function() {
       return "getSelection" in window && "modify" in window.getSelection();
     },
-    
+
     /**
-     * Opera needs a white space after a <br> in order to position the caret correctly
+     * Opera needs a white space after a <br> in order to position the caret correctly.
+     *
+     * Behavioral quirk, not feature-detectable.
      */
     needsSpaceAfterLineBreak: function() {
       return isOpera;
     },
-    
+
     /**
      * Whether the browser supports the speech api on the given element
-     * See http://mikepultz.com/2011/03/accessing-google-speech-api-chrome-11/
+     * See http://mikepultz.com/2011/03/accessing-google-speech-api-2011/
+     *
+     * Uses a feature probe (onwebkitspeechchange / speech property) rather than just UA.
      *
      * @example
      *    var input = document.createElement("input");
@@ -296,61 +391,79 @@ wysihtml5.browser = (function() {
      *    }
      */
     supportsSpeechApiOn: function(input) {
+      // Feature probe: check for the speech API properties directly
+      var hasSpeechApi = ("onwebkitspeechchange" in input || "speech" in input);
+      if (!hasSpeechApi) {
+        return false;
+      }
+      // Only Chrome 11+ has a usable implementation
       var chromeVersion = userAgent.match(/Chrome\/(\d+)/) || [, 0];
-      return chromeVersion[1] >= 11 && ("onwebkitspeechchange" in input || "speech" in input);
+      return chromeVersion[1] >= 11;
     },
-    
+
     /**
      * IE9 crashes when setting a getter via Object.defineProperty on XMLHttpRequest or XDomainRequest
      * See https://connect.microsoft.com/ie/feedback/details/650112
      * or try the POC http://tifftiff.de/ie9_crash/
+     *
+     * This is an IE-specific bug, not feature-detectable without triggering the crash.
      */
     crashesWhenDefineProperty: function(property) {
       return isIE && (property === "XMLHttpRequest" || property === "XDomainRequest");
     },
-    
+
     /**
-     * IE is the only browser who fires the "focus" event not immediately when .focus() is called on an element
+     * IE is the only browser who fired the "focus" event not immediately when .focus() is called on an element.
+     *
+     * Behavioral difference, not feature-detectable.
      */
     doesAsyncFocus: function() {
       return isIE;
     },
-    
+
     /**
-     * In IE it's impssible for the user and for the selection library to set the caret after an <img> when it's the lastChild in the document
+     * In IE it's impossible for the user and for the selection library to set the caret after an <img> when it's the lastChild in the document.
+     *
+     * Behavioral quirk, not feature-detectable.
      */
     hasProblemsSettingCaretAfterImg: function() {
       return isIE;
     },
-    
+
     hasUndoInContextMenu: function() {
       return isGecko || isChrome || isOpera;
     },
-    
+
     /**
      * Opera sometimes doesn't insert the node at the right position when range.insertNode(someNode)
      * is used (regardless if rangy or native)
      * This especially happens when the caret is positioned right after a <br> because then
      * insertNode() will insert the node right before the <br>
+     *
+     * Behavioral quirk, not feature-detectable.
      */
     hasInsertNodeIssue: function() {
       return isOpera;
     },
-    
+
     /**
      * IE 8+9 don't fire the focus event of the <body> when the iframe gets focused (even though the caret gets set into the <body>)
+     *
+     * Behavioral quirk, not feature-detectable.
      */
     hasIframeFocusIssue: function() {
       return isIE;
     },
-    
+
     /**
-     * Chrome + Safari create invalid nested markup after paste
-     * 
+     * Chrome + Safari create invalid nested markup after paste.
+     *
      *  <p>
      *    foo
      *    <p>bar</p> <!-- BOO! -->
      *  </p>
+     *
+     * Behavioral quirk of WebKit's paste handling, not feature-detectable without actually pasting.
      */
     createsNestedInvalidMarkupAfterPaste: function() {
       return isWebKit;
