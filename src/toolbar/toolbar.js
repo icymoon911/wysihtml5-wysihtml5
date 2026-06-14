@@ -20,7 +20,29 @@
       CLASS_NAME_COMMAND_ACTIVE     = "wysihtml5-command-active",
       CLASS_NAME_ACTION_ACTIVE      = "wysihtml5-action-active",
       dom                           = wysihtml5.dom;
-  
+
+  /**
+   * Look up an entry in a nested mapping object by name and optional value.
+   * Replaces the old `name + ":" + value` string-key approach that could
+   * collide when values contained colons.
+   */
+  function _getMappingEntry(mapping, name, value) {
+    return mapping[name] && mapping[name][value || ""];
+  }
+
+  /**
+   * Iterate over all entries in a nested mapping object.
+   * Callback receives (entry, name, value).
+   */
+  function _eachMappingEntry(mapping, callback) {
+    var name, value;
+    for (name in mapping) {
+      for (value in mapping[name]) {
+        callback(mapping[name][value], name, value);
+      }
+    }
+  }
+
   wysihtml5.toolbar.Toolbar = Base.extend(
     /** @scope wysihtml5.toolbar.Toolbar.prototype */ {
     constructor: function(editor, container) {
@@ -33,7 +55,7 @@
 
       this._observe();
       this.show();
-      
+
       var speechInputLinks  = this.container.querySelectorAll("[data-wysihtml5-command=insertSpeech]"),
           length            = speechInputLinks.length,
           i                 = 0;
@@ -42,29 +64,38 @@
       }
     },
 
+    /**
+     * Unified link discovery for both "command" and "action" types.
+     * Uses a nested object mapping (name -> value -> entry) to avoid
+     * collisions from the old string-key concatenation approach.
+     */
     _getLinks: function(type) {
-      var links   = this[type + "Links"] = wysihtml5.lang.array(this.container.querySelectorAll("[data-wysihtml5-" + type + "]")).get(),
-          length  = links.length,
-          i       = 0,
-          mapping = this[type + "Mapping"] = {},
-          link,
-          group,
-          name,
-          value,
-          dialog;
-      for (; i<length; i++) {
-        link    = links[i];
-        name    = link.getAttribute("data-wysihtml5-" + type);
-        value   = link.getAttribute("data-wysihtml5-" + type + "-value");
-        group   = this.container.querySelector("[data-wysihtml5-" + type + "-group='" + name + "']");
-        dialog  = this._getDialog(link, name);
-        
-        mapping[name + ":" + value] = {
+      var attrPrefix = "data-wysihtml5-" + type,
+          links      = this[type + "Links"] = wysihtml5.lang.array(
+            this.container.querySelectorAll("[" + attrPrefix + "]")
+          ).get(),
+          length     = links.length,
+          i          = 0,
+          mapping    = this[type + "Mapping"] = {},
+          link, group, name, value, dialog;
+
+      for (; i < length; i++) {
+        link   = links[i];
+        name   = link.getAttribute(attrPrefix);
+        value  = link.getAttribute(attrPrefix + "-value");
+        group  = this.container.querySelector("[" + attrPrefix + "-group='" + name + "']");
+        dialog = (type === "command") ? this._getDialog(link, name) : null;
+
+        if (!mapping[name]) {
+          mapping[name] = {};
+        }
+        mapping[name][value || ""] = {
           link:   link,
           group:  group,
           name:   name,
           value:  value,
           dialog: dialog,
+          type:   type,
           state:  false
         };
       }
@@ -75,7 +106,7 @@
           dialogElement = this.container.querySelector("[data-wysihtml5-dialog='" + command + "']"),
           dialog,
           caretBookmark;
-      
+
       if (dialogElement) {
         dialog = new wysihtml5.toolbar.Dialog(link, dialogElement);
 
@@ -90,7 +121,7 @@
             that.composer.selection.setBookmark(caretBookmark);
           }
           that._execCommand(command, attributes);
-          
+
           that.editor.fire("save:dialog", { command: command, dialogContainer: dialogElement, commandLink: link });
         });
 
@@ -113,7 +144,7 @@
         return;
       }
 
-      var commandObj = this.commandMapping[command + ":" + commandValue];
+      var commandObj = _getMappingEntry(this.commandMapping, command, commandValue);
 
       // Show dialog when available
       if (commandObj && commandObj.dialog && !commandObj.state) {
@@ -149,7 +180,7 @@
           links     = this.commandLinks.concat(this.actionLinks),
           length    = links.length,
           i         = 0;
-      
+
       for (; i<length; i++) {
         // 'javascript:;' and unselectable=on Needed for IE, but done in all browsers to make sure that all get the same css applied
         // (you know, a:link { ... } doesn't match anchors with missing href attribute)
@@ -165,7 +196,7 @@
 
       // Needed for opera and chrome
       dom.delegate(container, "[data-wysihtml5-command], [data-wysihtml5-action]", "mousedown", function(event) { event.preventDefault(); });
-      
+
       dom.delegate(container, "[data-wysihtml5-command]", "click", function(event) {
         var link          = this,
             command       = link.getAttribute("data-wysihtml5-command"),
@@ -209,16 +240,12 @@
     },
 
     _updateLinkStates: function() {
-      var commandMapping    = this.commandMapping,
-          actionMapping     = this.actionMapping,
-          i,
-          state,
-          action,
-          command;
-      // every millisecond counts... this is executed quite often
-      for (i in commandMapping) {
-        command = commandMapping[i];
-        if (this.commandsDisabled) {
+      var that = this;
+
+      // Update command link states
+      _eachMappingEntry(this.commandMapping, function(command) {
+        var state;
+        if (that.commandsDisabled) {
           state = false;
           dom.removeClass(command.link, CLASS_NAME_COMMAND_ACTIVE);
           if (command.group) {
@@ -228,7 +255,7 @@
             command.dialog.hide();
           }
         } else {
-          state = this.composer.commands.state(command.name, command.value);
+          state = that.composer.commands.state(command.name, command.value);
           if (wysihtml5.lang.object(state).isArray()) {
             // Grab first and only object/element in state array, otherwise convert state into boolean
             // to avoid showing a dialog for multiple selected elements which may have different attributes
@@ -243,7 +270,7 @@
         }
 
         if (command.state === state) {
-          continue;
+          return;
         }
 
         command.state = state;
@@ -268,20 +295,19 @@
             command.dialog.hide();
           }
         }
-      }
-      
-      for (i in actionMapping) {
-        action = actionMapping[i];
-        
+      });
+
+      // Update action link states
+      _eachMappingEntry(this.actionMapping, function(action) {
         if (action.name === "change_view") {
-          action.state = this.editor.currentView === this.editor.textarea;
+          action.state = that.editor.currentView === that.editor.textarea;
           if (action.state) {
             dom.addClass(action.link, CLASS_NAME_ACTION_ACTIVE);
           } else {
             dom.removeClass(action.link, CLASS_NAME_ACTION_ACTIVE);
           }
         }
-      }
+      });
     },
 
     show: function() {
@@ -292,5 +318,5 @@
       this.container.style.display = "none";
     }
   });
-  
+
 })(wysihtml5);

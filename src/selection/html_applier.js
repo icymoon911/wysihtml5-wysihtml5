@@ -15,24 +15,17 @@
     if (!el.className) {
       return false;
     }
-    
+
     var matchingClassNames = el.className.match(regExp) || [];
     return matchingClassNames[matchingClassNames.length - 1] === cssClass;
   }
 
   function addClass(el, cssClass, regExp) {
-    if (el.className) {
-      removeClass(el, regExp);
-      el.className += " " + cssClass;
-    } else {
-      el.className = cssClass;
-    }
+    wysihtml5.dom.addClassWithRegExp(el, cssClass, regExp);
   }
 
   function removeClass(el, regExp) {
-    if (el.className) {
-      el.className = el.className.replace(regExp, "");
-    }
+    wysihtml5.dom.removeClassWithRegExp(el, regExp);
   }
   
   function hasSameClasses(el1, el2) {
