@@ -65,48 +65,50 @@ wysihtml5.dom.parse = (function() {
       // Rename unknown tags to this
       DEFAULT_NODE_NAME   = "span",
       WHITE_SPACE_REG_EXP = /\s+/,
-      defaultRules        = { tags: {}, classes: {} },
-      currentRules        = {};
-  
+      defaultRules        = { tags: {}, classes: {} };
+
   /**
    * Iterates over all childs of the element, recreates them, appends them into a document fragment
    * which later replaces the entire body content
    */
   function parse(elementOrHtml, rules, context, cleanUp) {
-    wysihtml5.lang.object(currentRules).merge(defaultRules).merge(rules).get();
-    
+    // Build a local rules object for THIS invocation instead of sharing a
+    // module-level variable.  This prevents multiple editor instances (or
+    // rapid successive calls) from clobbering each other's parser rules.
+    var currentRules = wysihtml5.lang.object({}).merge(defaultRules).merge(rules).get();
+
     context           = context || elementOrHtml.ownerDocument || document;
     var fragment      = context.createDocumentFragment(),
         isString      = typeof(elementOrHtml) === "string",
         element,
         newNode,
         firstChild;
-    
+
     if (isString) {
       element = wysihtml5.dom.getAsDom(elementOrHtml, context);
     } else {
       element = elementOrHtml;
     }
-    
+
     while (element.firstChild) {
       firstChild = element.firstChild;
-      newNode = _convert(firstChild, cleanUp);
+      newNode = _convert(firstChild, cleanUp, currentRules);
       element.removeChild(firstChild);
       if (newNode) {
         fragment.appendChild(newNode);
       }
     }
-    
+
     // Clear element contents
     element.innerHTML = "";
-    
+
     // Insert new DOM tree
     element.appendChild(fragment);
-    
+
     return isString ? wysihtml5.quirks.getCorrectInnerHTML(element) : element;
   }
   
-  function _convert(oldNode, cleanUp) {
+  function _convert(oldNode, cleanUp, currentRules) {
     var oldNodeType     = oldNode.nodeType,
         oldChilds       = oldNode.childNodes,
         oldChildsLength = oldChilds.length,
@@ -115,20 +117,20 @@ wysihtml5.dom.parse = (function() {
         fragment,
         newNode,
         newChild;
-    
-    newNode = method && method(oldNode);
-    
+
+    newNode = method && method(oldNode, currentRules);
+
     if (!newNode) {
       return null;
     }
-    
+
     for (i=0; i<oldChildsLength; i++) {
-      newChild = _convert(oldChilds[i], cleanUp);
+      newChild = _convert(oldChilds[i], cleanUp, currentRules);
       if (newChild) {
         newNode.appendChild(newChild);
       }
     }
-    
+
     // Cleanup senseless <span> elements
     if (cleanUp &&
         newNode.nodeName.toLowerCase() === DEFAULT_NODE_NAME &&
@@ -139,11 +141,11 @@ wysihtml5.dom.parse = (function() {
       }
       return fragment;
     }
-    
+
     return newNode;
   }
-  
-  function _handleElement(oldNode) {
+
+  function _handleElement(oldNode, currentRules) {
     var rule,
         newNode,
         tagRules    = currentRules.tags,
@@ -201,13 +203,13 @@ wysihtml5.dom.parse = (function() {
     }
     
     newNode = oldNode.ownerDocument.createElement(rule.rename_tag || nodeName);
-    _handleAttributes(oldNode, newNode, rule);
+    _handleAttributes(oldNode, newNode, rule, currentRules);
     
     oldNode = null;
     return newNode;
   }
   
-  function _handleAttributes(oldNode, newNode, rule) {
+  function _handleAttributes(oldNode, newNode, rule, currentRules) {
     var attributes          = {},                         // fresh new set of attributes to set on newNode
         setClass            = rule.set_class,             // classes to set
         addClass            = rule.add_class,             // add classes based on existing attributes

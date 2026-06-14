@@ -1,11 +1,14 @@
 (function(wysihtml5) {
-  var NODE_NAME = "IMG";
-  
+  var NODE_NAME = "IMG",
+      // Only allow http(s) and protocol-relative/root-relative URLs.
+      // Blocks javascript:, vbscript:, data:, and other dangerous schemes.
+      SAFE_SRC_REG_EXP = /^(https?:\/\/|\/\/|\/)/i;
+
   wysihtml5.commands.insertImage = {
     /**
      * Inserts an <img>
      * If selection is already an image link, it removes it
-     * 
+     *
      * @example
      *    // either ...
      *    wysihtml5.commands.insertImage.exec(composer, "insertImage", "http://www.google.de/logo.jpg");
@@ -14,6 +17,11 @@
      */
     exec: function(composer, command, value) {
       value = typeof(value) === "object" ? value : { src: value };
+
+      // Validate src to prevent XSS via javascript: or other dangerous protocols
+      if (value.src && !SAFE_SRC_REG_EXP.test(value.src)) {
+        return;
+      }
 
       var doc     = composer.doc,
           image   = this.state(composer),

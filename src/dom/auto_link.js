@@ -27,7 +27,46 @@
       TRAILING_CHAR_REG_EXP = /([^\w\/\-](,?))$/i,
       MAX_DISPLAY_LENGTH    = 100,
       BRACKETS              = { ")": "(", "]": "[", "}": "{" };
-  
+
+  /**
+   * Strip trailing punctuation that is NOT part of a balanced bracket pair.
+   * For example, in `https://en.wikipedia.org/wiki/Foo_(bar).` the trailing
+   * period is stripped but the closing paren is kept because it balances
+   * the opening paren inside the URL.
+   */
+  function _stripTrailingPunctuation(url) {
+    var punctuation = "",
+        match, firstChar, opening;
+
+    // Iteratively strip trailing non-word chars, but put back any closing
+    // bracket whose matching opening bracket is present inside the URL.
+    while ((match = url.match(TRAILING_CHAR_REG_EXP))) {
+      // match[1] may be 1 or 2 chars (e.g. ")" or ")." or "),").
+      // The bracket (if any) is always the first character.
+      firstChar = match[1].charAt(0);
+      opening   = BRACKETS[firstChar];
+
+      // If the first char is a closing bracket, count occurrences of both
+      // the opening and closing brackets in the URL body (everything before
+      // this trailing match).
+      if (opening) {
+        var urlBody     = url.slice(0, url.length - match[1].length),
+            openCount   = (urlBody.split(opening).length - 1),
+            closeCount  = (urlBody.split(firstChar).length - 1);
+        // If there are more opening brackets than closing ones, this closing
+        // bracket is part of the URL (it balances an earlier opening bracket).
+        if (openCount > closeCount) {
+          break;
+        }
+      }
+
+      punctuation = match[1] + punctuation;
+      url = url.slice(0, url.length - match[1].length);
+    }
+
+    return { url: url, punctuation: punctuation };
+  }
+
   function autoLink(element) {
     if (_hasParentThatShouldBeIgnored(element)) {
       return element;
@@ -39,31 +78,29 @@
 
     return _parseNode(element);
   }
-  
+
   /**
    * This is basically a rebuild of
    * the rails auto_link_urls text helper
    */
   function _convertUrlsToLinks(str) {
     return str.replace(URL_REG_EXP, function(match, url) {
-      var punctuation = (url.match(TRAILING_CHAR_REG_EXP) || [])[1] || "",
-          opening     = BRACKETS[punctuation];
-      url = url.replace(TRAILING_CHAR_REG_EXP, "");
+      // NOTE: `str` is already HTML-escaped by _wrapMatchesInNode (via escapeHTML()),
+      // so the matched URL and punctuation are safe for direct HTML insertion.
+      // No additional escaping is needed here.
+      var stripped    = _stripTrailingPunctuation(url),
+          realUrl     = stripped.url,
+          displayUrl  = stripped.url,
+          punctuation = stripped.punctuation;
 
-      if (url.split(opening).length > url.split(punctuation).length) {
-        url = url + punctuation;
-        punctuation = "";
-      }
-      var realUrl    = url,
-          displayUrl = url;
-      if (url.length > MAX_DISPLAY_LENGTH) {
+      if (realUrl.length > MAX_DISPLAY_LENGTH) {
         displayUrl = displayUrl.substr(0, MAX_DISPLAY_LENGTH) + "...";
       }
       // Add http prefix if necessary
       if (realUrl.substr(0, 4) === "www.") {
         realUrl = "http://" + realUrl;
       }
-      
+
       return '<a href="' + realUrl + '">' + displayUrl + '</a>' + punctuation;
     });
   }
