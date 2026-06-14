@@ -128,6 +128,107 @@
       }
     });
 
+    // --------- Tab key table navigation ---------
+    dom.observe(element, "keydown", function(event) {
+      var keyCode      = event.keyCode,
+          selectedNode, cell, row, table, cells, colIndex,
+          nextCell, prevCell, newRow, nextRow, firstCellOfNextRow;
+
+      if (keyCode !== wysihtml5.TAB_KEY) {
+        return;
+      }
+
+      selectedNode = that.selection.getSelectedNode();
+      cell = wysihtml5.dom.getParentElement(selectedNode, { nodeName: ["TD", "TH"] });
+      if (!cell) {
+        return;
+      }
+
+      row      = wysihtml5.dom.getParentElement(cell, { nodeName: "TR" });
+      table    = wysihtml5.dom.getParentElement(cell, { nodeName: "TABLE" });
+      if (!row || !table) {
+        return;
+      }
+
+      cells    = row.cells;
+      colIndex = Array.prototype.indexOf.call(cells, cell);
+
+      if (event.shiftKey) {
+        // Shift+Tab: move to previous cell, or last cell of previous row
+        if (colIndex > 0) {
+          prevCell = cells[colIndex - 1];
+        } else {
+          // Go to last cell of previous row
+          var prevRow = row.previousSibling;
+          while (prevRow && prevRow.nodeName !== "TR") {
+            prevRow = prevRow.previousSibling;
+          }
+          if (prevRow && prevRow.cells && prevRow.cells.length > 0) {
+            prevCell = prevRow.cells[prevRow.cells.length - 1];
+          }
+        }
+        if (prevCell) {
+          that.selection.selectNode(prevCell, true);
+        }
+      } else {
+        // Tab: move to next cell, or first cell of next row, or create new row
+        if (colIndex < cells.length - 1) {
+          nextCell = cells[colIndex + 1];
+        } else {
+          // Go to first cell of next row
+          nextRow = row.nextSibling;
+          while (nextRow && nextRow.nodeName !== "TR") {
+            nextRow = nextRow.nextSibling;
+          }
+          if (nextRow && nextRow.cells && nextRow.cells.length > 0) {
+            firstCellOfNextRow = nextRow.cells[0];
+          } else {
+            // Last cell of last row: add a new row
+            var colCount = 0;
+            for (var k = 0; k < cells.length; k++) {
+              colCount += (cells[k].colSpan || 1);
+            }
+            newRow = that.doc.createElement("tr");
+            for (var m = 0; m < colCount; m++) {
+              var newCell = that.doc.createElement("td");
+              newCell.innerHTML = "<br>";
+              newRow.appendChild(newCell);
+            }
+            row.parentNode.appendChild(newRow);
+            firstCellOfNextRow = newRow.cells[0];
+          }
+          nextCell = firstCellOfNextRow;
+        }
+        if (nextCell) {
+          that.selection.selectNode(nextCell, true);
+        }
+      }
+
+      event.preventDefault();
+    });
+
+    // --------- Enter key handling inside table cells ---------
+    dom.observe(element, "keydown", function(event) {
+      var keyCode      = event.keyCode,
+          selectedNode, cell;
+
+      if (keyCode !== wysihtml5.ENTER_KEY) {
+        return;
+      }
+
+      selectedNode = that.selection.getSelectedNode();
+      cell = wysihtml5.dom.getParentElement(selectedNode, { nodeName: ["TD", "TH"] });
+      if (!cell) {
+        return;
+      }
+
+      // Inside a table cell, Enter inserts a line break rather than creating a new paragraph
+      if (!event.shiftKey) {
+        that.commands.exec("insertLineBreak");
+        event.preventDefault();
+      }
+    });
+
     // --------- Make sure that when pressing backspace/delete on selected images deletes the image and it's anchor ---------
     dom.observe(element, "keydown", function(event) {
       var target  = that.selection.getSelectedNode(true),

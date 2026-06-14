@@ -131,3 +131,30 @@
 .wysiwyg-clear-left {
   clear: left;
 }
+
+/* Table styles */
+table.wysiwyg-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+}
+
+table.wysiwyg-table-bordered td,
+table.wysiwyg-table-bordered th,
+table.wysiwyg-table td,
+table.wysiwyg-table th {
+  border: 1px solid #999;
+  padding: 4px 6px;
+  min-width: 30px;
+  vertical-align: top;
+}
+
+table.wysiwyg-table-bordered th,
+table.wysiwyg-table th {
+  background-color: #f0f0f0;
+  font-weight: bold;
+}
+
+table.wysiwyg-table-striped tbody tr:nth-child(even) td {
+  background-color: #f9f9f9;
+}

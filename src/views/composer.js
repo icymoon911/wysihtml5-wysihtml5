@@ -183,6 +183,7 @@
       this._initObjectResizing();
       this._initUndoManager();
       this._initLineBreaking();
+      this._initTableStyles();
       
       // Simulate html5 autofocus on contentEditable element
       // This doesn't work on IOS (5.1.1)
@@ -366,15 +367,21 @@
       
       dom.observe(this.doc, "keydown", function(event) {
         var keyCode = event.keyCode;
-        
+
         if (event.shiftKey) {
           return;
         }
-        
+
         if (keyCode !== wysihtml5.ENTER_KEY && keyCode !== wysihtml5.BACKSPACE_KEY) {
           return;
         }
-        
+
+        // Don't interfere with table cell handling (handled separately in composer.observe.js)
+        var cellElement = dom.getParentElement(that.selection.getSelectedNode(), { nodeName: ["TD", "TH"] });
+        if (cellElement) {
+          return;
+        }
+
         var blockElement = dom.getParentElement(that.selection.getSelectedNode(), { nodeName: USE_NATIVE_LINE_BREAK_INSIDE_TAGS }, 4);
         if (blockElement) {
           setTimeout(function() {
@@ -406,6 +413,19 @@
           event.preventDefault();
         }
       });
+    },
+
+    _initTableStyles: function() {
+      // Inject minimal default table styles into the iframe so tables are always visible
+      // even when no external stylesheet is loaded
+      dom.insertCSS([
+        "table.wysiwyg-table { border-collapse: collapse; width: 100%; margin: 8px 0; }",
+        "table.wysiwyg-table td, table.wysiwyg-table th { border: 1px solid #999; padding: 4px 6px; min-width: 30px; vertical-align: top; }",
+        "table.wysiwyg-table th { background-color: #f0f0f0; font-weight: bold; }",
+        "table.wysiwyg-table-bordered td, table.wysiwyg-table-bordered th { border: 1px solid #999; }",
+        "table { border-collapse: collapse; }",
+        "table td, table th { border: 1px solid #ccc; padding: 4px; min-width: 20px; }"
+      ]).into(this.doc);
     }
   });
 })(wysihtml5);

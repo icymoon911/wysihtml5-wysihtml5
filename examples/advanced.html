@@ -96,6 +96,12 @@
     <a data-wysihtml5-command="foreColor" data-wysihtml5-command-value="red">red</a> |
     <a data-wysihtml5-command="foreColor" data-wysihtml5-command-value="green">green</a> |
     <a data-wysihtml5-command="foreColor" data-wysihtml5-command-value="blue">blue</a> |
+    <a data-wysihtml5-command="insertTable">insert table</a> |
+    <a data-wysihtml5-command="addRowAfter">+row</a> |
+    <a data-wysihtml5-command="addColAfter">+col</a> |
+    <a data-wysihtml5-command="deleteRow">-row</a> |
+    <a data-wysihtml5-command="deleteCol">-col</a> |
+    <a data-wysihtml5-command="deleteTable">-table</a> |
     <a data-wysihtml5-command="undo">undo</a> |
     <a data-wysihtml5-command="redo">redo</a> |
     <a data-wysihtml5-command="insertSpeech">speech</a>
@@ -121,6 +127,18 @@
           <option value="wysiwyg-float-left">left</option>
           <option value="wysiwyg-float-right">right</option>
         </select>
+      </label>
+      <a data-wysihtml5-dialog-action="save">OK</a>&nbsp;<a data-wysihtml5-dialog-action="cancel">Cancel</a>
+    </div>
+
+    <div data-wysihtml5-dialog="insertTable" style="display: none;">
+      <label>
+        Rows:
+        <input data-wysihtml5-dialog-field="rows" value="3" type="number" min="1" max="50" style="width: 40px;">
+      </label>
+      <label>
+        Columns:
+        <input data-wysihtml5-dialog-field="cols" value="3" type="number" min="1" max="20" style="width: 40px;">
       </label>
       <a data-wysihtml5-dialog-action="save">OK</a>&nbsp;<a data-wysihtml5-dialog-action="cancel">Cancel</a>
     </div>

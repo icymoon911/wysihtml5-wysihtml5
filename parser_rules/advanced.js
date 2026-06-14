@@ -71,7 +71,10 @@ var wysihtml5ParserRules = {
         "wysiwyg-text-align-center": 1,
         "wysiwyg-text-align-justify": 1,
         "wysiwyg-text-align-left": 1,
-        "wysiwyg-text-align-right": 1
+        "wysiwyg-text-align-right": 1,
+        "wysiwyg-table": 1,
+        "wysiwyg-table-bordered": 1,
+        "wysiwyg-table-striped": 1
     },
     /**
      * Tag list
@@ -249,7 +252,9 @@ var wysihtml5ParserRules = {
         "td": {
             "check_attributes": {
                 "rowspan": "numbers",
-                "colspan": "numbers"
+                "colspan": "numbers",
+                "width": "numbers",
+                "height": "numbers"
             },
             "add_class": {
                 "align": "align_text"
@@ -295,7 +300,14 @@ var wysihtml5ParserRules = {
         "input": {
             "remove": 1
         },
-        "table": {},
+        "table": {
+            "check_attributes": {
+                "width": "numbers"
+            },
+            "add_class": {
+                "align": "align_text"
+            }
+        },
         "keygen": {
             "remove": 1
         },
@@ -454,7 +466,9 @@ var wysihtml5ParserRules = {
         "th": {
             "check_attributes": {
                 "rowspan": "numbers",
-                "colspan": "numbers"
+                "colspan": "numbers",
+                "width": "numbers",
+                "height": "numbers"
             },
             "add_class": {
                 "align": "align_text"
@@ -496,9 +510,7 @@ var wysihtml5ParserRules = {
         "samp": {
             "rename_tag": "span"
         },
-        "col": {
-            "remove": 1
-        },
+        "col": {},
         "article": {
             "rename_tag": "div"
         },
@@ -515,9 +527,7 @@ var wysihtml5ParserRules = {
         "menu": {
             "rename_tag": "ul"
         },
-        "colgroup": {
-            "remove": 1
-        },
+        "colgroup": {},
         "ruby": {
             "rename_tag": "span"
         },

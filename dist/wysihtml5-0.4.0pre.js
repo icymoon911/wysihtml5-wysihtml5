@@ -31,6 +31,7 @@ var wysihtml5 = {
   ENTER_KEY:      13,
   ESCAPE_KEY:     27,
   SPACE_KEY:      32,
+  TAB_KEY:        9,
   DELETE_KEY:     46
 };/**
  * @license Rangy, a cross-browser JavaScript range and selection library
@@ -3485,7 +3486,7 @@ wysihtml5.browser = (function() {
      * Firefox on OSX navigates through history when hitting CMD + Arrow right/left
      */
     hasHistoryIssue: function() {
-      return isGecko;
+      return isGecko && navigator.platform.substr(0, 3) === "Mac";
     },
 
     /**
@@ -3725,6 +3726,18 @@ wysihtml5.browser = (function() {
      */
     hasIframeFocusIssue: function() {
       return isIE;
+    },
+    
+    /**
+     * Chrome + Safari create invalid nested markup after paste
+     * 
+     *  <p>
+     *    foo
+     *    <p>bar</p> <!-- BOO! -->
+     *  </p>
+     */
+    createsNestedInvalidMarkupAfterPaste: function() {
+      return isWebKit;
     }
   };
 })();wysihtml5.lang.array = function(arr) {
@@ -3876,7 +3889,14 @@ wysihtml5.browser = (function() {
   };
 };(function() {
   var WHITE_SPACE_START = /^\s+/,
-      WHITE_SPACE_END   = /\s+$/;
+      WHITE_SPACE_END   = /\s+$/,
+      ENTITY_REG_EXP    = /[&<>"]/g,
+      ENTITY_MAP = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': "&quot;"
+      };
   wysihtml5.lang.string = function(str) {
     str = String(str);
     return {
@@ -3912,6 +3932,15 @@ wysihtml5.browser = (function() {
             return str.split(search).join(replace);
           }
         };
+      },
+      
+      /**
+       * @example
+       *    wysihtml5.lang.string("hello<br>").escapeHTML();
+       *    // => "hello&lt;br&gt;"
+       */
+      escapeHTML: function() {
+        return str.replace(ENTITY_REG_EXP, function(c) { return ENTITY_MAP[c]; });
       }
     };
   };
@@ -4002,11 +4031,12 @@ wysihtml5.browser = (function() {
    */
   function _wrapMatchesInNode(textNode) {
     var parentNode  = textNode.parentNode,
+        nodeValue   = wysihtml5.lang.string(textNode.data).escapeHTML(),
         tempElement = _getTempElement(parentNode.ownerDocument);
     
     // We need to insert an empty/temporary <span /> to fix IE quirks
     // Elsewise IE would strip white space in the beginning
-    tempElement.innerHTML = "<span></span>" + _convertUrlsToLinks(textNode.data);
+    tempElement.innerHTML = "<span></span>" + _convertUrlsToLinks(nodeValue);
     tempElement.removeChild(tempElement.firstChild);
     
     while (tempElement.firstChild) {
@@ -4792,9 +4822,9 @@ wysihtml5.dom.parse = (function() {
     }
     
     while (element.firstChild) {
-      firstChild  = element.firstChild;
-      element.removeChild(firstChild);
+      firstChild = element.firstChild;
       newNode = _convert(firstChild, cleanUp);
+      element.removeChild(firstChild);
       if (newNode) {
         fragment.appendChild(newNode);
       }
@@ -4815,6 +4845,7 @@ wysihtml5.dom.parse = (function() {
         oldChildsLength = oldChilds.length,
         method          = NODE_TYPE_MAPPING[oldNodeType],
         i               = 0,
+        fragment,
         newNode,
         newChild;
     
@@ -4833,10 +4864,13 @@ wysihtml5.dom.parse = (function() {
     
     // Cleanup senseless <span> elements
     if (cleanUp &&
-        newNode.childNodes.length <= 1 &&
         newNode.nodeName.toLowerCase() === DEFAULT_NODE_NAME &&
-        !newNode.attributes.length) {
-      return newNode.firstChild;
+        (!newNode.childNodes.length || !newNode.attributes.length)) {
+      fragment = newNode.ownerDocument.createDocumentFragment();
+      while (newNode.firstChild) {
+        fragment.appendChild(newNode.firstChild);
+      }
+      return fragment;
     }
     
     return newNode;
@@ -5054,8 +5088,17 @@ wysihtml5.dom.parse = (function() {
     }
   }
   
+  var INVISIBLE_SPACE_REG_EXP = /\uFEFF/g;
   function _handleText(oldNode) {
-    return oldNode.ownerDocument.createTextNode(oldNode.data);
+    var nextSibling = oldNode.nextSibling;
+    if (nextSibling && nextSibling.nodeType === wysihtml5.TEXT_NODE) {
+      // Concatenate text nodes
+      nextSibling.data = oldNode.data + nextSibling.data;
+    } else {
+      // \uFEFF = wysihtml5.INVISIBLE_SPACE (used as a hack in certain rich text editing situations)
+      var data = oldNode.data.replace(INVISIBLE_SPACE_REG_EXP, "");
+      return oldNode.ownerDocument.createTextNode(data);
+    } 
   }
   
   
@@ -6896,8 +6939,7 @@ wysihtml5.commands.bold = {
  * Instead we set a css class
  */
 (function(wysihtml5) {
-  var undef,
-      REG_EXP = /wysiwyg-font-size-[0-9a-z\-]+/g;
+  var REG_EXP = /wysiwyg-font-size-[0-9a-z\-]+/g;
   
   wysihtml5.commands.fontSize = {
     exec: function(composer, command, size) {
@@ -6906,10 +6948,6 @@ wysihtml5.commands.bold = {
 
     state: function(composer, command, size) {
       return wysihtml5.commands.formatInline.state(composer, command, "span", "wysiwyg-font-size-" + size, REG_EXP);
-    },
-
-    value: function() {
-      return undef;
     }
   };
 })(wysihtml5);
@@ -7274,7 +7312,6 @@ wysihtml5.commands.bold = {
       var doc     = composer.doc,
           image   = this.state(composer),
           textNode,
-          i,
           parent;
 
       if (image) {
@@ -7297,11 +7334,8 @@ wysihtml5.commands.bold = {
 
       image = doc.createElement(NODE_NAME);
       
-      for (i in value) {
-        if (i === "className") {
-          i = "class";
-        }
-        image.setAttribute(i, value[i]);
+      for (var i in value) {
+        image.setAttribute(i === "className" ? "class" : i, value[i]);
       }
 
       composer.selection.insertNode(image);
@@ -7423,7 +7457,103 @@ wysihtml5.commands.bold = {
     var selectedNode = composer.selection.getSelectedNode();
     return wysihtml5.dom.getParentElement(selectedNode, { nodeName: "OL" });
   }
-};wysihtml5.commands.insertUnorderedList = {
+};/**
+ * insertTable Command
+ *
+ * Inserts a <table> element at the current caret position.
+ *
+ * @example
+ *    wysihtml5.commands.insertTable.exec(composer, "insertTable", { rows: 3, cols: 3 });
+ *    wysihtml5.commands.insertTable.exec(composer, "insertTable", { rows: 3, cols: 3, className: "wysiwyg-table-bordered" });
+ */
+(function(wysihtml5) {
+  var dom = wysihtml5.dom;
+
+  /**
+   * Build a table HTML string with the given number of rows and columns.
+   * Each cell gets a <br> placeholder so the caret can land inside it.
+   *
+   * @param {Number} rows Number of rows
+   * @param {Number} cols Number of columns
+   * @param {String} [className] Optional CSS class for the table
+   * @return {String} The table HTML
+   */
+  function _buildTableHTML(rows, cols, className) {
+    var html = '<table',
+        i, j;
+
+    if (className) {
+      html += ' class="' + className + '"';
+    }
+
+    html += '>';
+
+    for (i = 0; i < rows; i++) {
+      html += '<tr>';
+      for (j = 0; j < cols; j++) {
+        html += '<td><br></td>';
+      }
+      html += '</tr>';
+    }
+
+    html += '</table>';
+    return html;
+  }
+
+  wysihtml5.commands.insertTable = {
+    /**
+     * Insert a table at the current caret position.
+     *
+     * @param {Object} composer The wysihtml5 composer instance
+     * @param {String} command The command name ("insertTable")
+     * @param {Object} value An object with { rows, cols } and optional { className }
+     */
+    exec: function(composer, command, value) {
+      var doc       = composer.doc,
+          rows, cols, className,
+          tableHTML,
+          tableElement,
+          firstCell;
+
+      if (!value) {
+        return;
+      }
+
+      rows      = parseInt(value.rows, 10) || 2;
+      cols      = parseInt(value.cols, 10) || 2;
+      className = value.className || "wysiwyg-table wysiwyg-table-bordered";
+
+      // Clamp to reasonable values
+      rows = Math.max(1, Math.min(rows, 50));
+      cols = Math.max(1, Math.min(cols, 20));
+
+      tableHTML = _buildTableHTML(rows, cols, className);
+
+      // Insert the table HTML
+      composer.selection.insertHTML(tableHTML);
+
+      // Find the inserted table and place cursor in first cell
+      tableElement = composer.element.querySelector("table");
+      if (tableElement) {
+        firstCell = tableElement.querySelector("td");
+        if (firstCell) {
+          composer.selection.selectNode(firstCell, true);
+        }
+      }
+    },
+
+    /**
+     * insertTable is an action command, not a toggle.
+     * Always return false so the dialog opens every time.
+     *
+     * @return {Boolean} Always false
+     */
+    state: function(composer) {
+      return false;
+    }
+  };
+})(wysihtml5);
+wysihtml5.commands.insertUnorderedList = {
   exec: function(composer, command) {
     var doc           = composer.doc,
         selectedNode  = composer.selection.getSelectedNode(),
@@ -7546,7 +7676,317 @@ wysihtml5.commands.redo = {
   state: function(composer) {
     return false;
   }
-};wysihtml5.commands.underline = {
+};/**
+ * Table Operations Commands
+ *
+ * Provides commands for manipulating table structure:
+ * - addRowBefore / addRowAfter: Insert a new row relative to the current cell
+ * - addColBefore / addColAfter: Insert a new column relative to the current cell
+ * - deleteRow: Remove the row containing the current cell
+ * - deleteCol: Remove the column containing the current cell
+ * - deleteTable: Remove the entire table
+ *
+ * @example
+ *    wysihtml5.commands.addRowAfter.exec(composer, "addRowAfter");
+ *    wysihtml5.commands.deleteRow.exec(composer, "deleteRow");
+ */
+(function(wysihtml5) {
+  var dom = wysihtml5.dom;
+
+  /**
+   * Get the cell (TD or TH) containing the current selection.
+   */
+  function _getCurrentCell(composer) {
+    var selectedNode = composer.selection.getSelectedNode();
+    return dom.getParentElement(selectedNode, { nodeName: ["TD", "TH"] });
+  }
+
+  /**
+   * Get the row (TR) containing the given cell.
+   */
+  function _getRow(cell) {
+    return dom.getParentElement(cell, { nodeName: "TR" });
+  }
+
+  /**
+   * Get the table element containing the given cell.
+   */
+  function _getTable(cell) {
+    return dom.getParentElement(cell, { nodeName: "TABLE" });
+  }
+
+  /**
+   * Get the column index of a cell within its row, accounting for colspan.
+   */
+  function _getColIndex(cell) {
+    var row   = _getRow(cell),
+        cells = row.cells,
+        index = 0,
+        i;
+    for (i = 0; i < cells.length; i++) {
+      if (cells[i] === cell) {
+        return index;
+      }
+      index += (cells[i].colSpan || 1);
+    }
+    return index;
+  }
+
+  /**
+   * Count the total number of columns in a table (based on first row or max).
+   */
+  function _getTableColCount(table) {
+    var rows   = table.rows,
+        maxCols = 0,
+        i, j, rowCols;
+    for (i = 0; i < rows.length; i++) {
+      rowCols = 0;
+      for (j = 0; j < rows[i].cells.length; j++) {
+        rowCols += (rows[i].cells[j].colSpan || 1);
+      }
+      if (rowCols > maxCols) {
+        maxCols = rowCols;
+      }
+    }
+    return maxCols;
+  }
+
+  /**
+   * Create a new cell element (TD by default).
+   */
+  function _createCell(doc, tagName) {
+    var cell = doc.createElement(tagName || "td");
+    cell.innerHTML = "<br>";
+    return cell;
+  }
+
+  /**
+   * Create a new row with the given number of columns.
+   */
+  function _createRow(doc, colCount) {
+    var row = doc.createElement("tr"),
+        i;
+    for (i = 0; i < colCount; i++) {
+      row.appendChild(_createCell(doc));
+    }
+    return row;
+  }
+
+  // ---------- addRowBefore ----------
+  wysihtml5.commands.addRowBefore = {
+    exec: function(composer, command) {
+      var cell = _getCurrentCell(composer);
+      if (!cell) { return; }
+
+      var row       = _getRow(cell),
+          table     = _getTable(cell),
+          colCount  = _getTableColCount(table),
+          newRow    = _createRow(composer.doc, colCount);
+
+      row.parentNode.insertBefore(newRow, row);
+
+      // Restore focus to the original cell
+      composer.selection.selectNode(cell, true);
+    },
+
+    state: function(composer) {
+      return !!_getCurrentCell(composer);
+    }
+  };
+
+  // ---------- addRowAfter ----------
+  wysihtml5.commands.addRowAfter = {
+    exec: function(composer, command) {
+      var cell = _getCurrentCell(composer);
+      if (!cell) { return; }
+
+      var row       = _getRow(cell),
+          table     = _getTable(cell),
+          colCount  = _getTableColCount(table),
+          newRow    = _createRow(composer.doc, colCount),
+          nextRow   = row.nextSibling;
+
+      if (nextRow) {
+        row.parentNode.insertBefore(newRow, nextRow);
+      } else {
+        row.parentNode.appendChild(newRow);
+      }
+
+      // Restore focus to the original cell
+      composer.selection.selectNode(cell, true);
+    },
+
+    state: function(composer) {
+      return !!_getCurrentCell(composer);
+    }
+  };
+
+  // ---------- addColBefore ----------
+  wysihtml5.commands.addColBefore = {
+    exec: function(composer, command) {
+      var cell = _getCurrentCell(composer);
+      if (!cell) { return; }
+
+      var colIndex = _getColIndex(cell),
+          table    = _getTable(cell),
+          rows     = table.rows,
+          i, row, newCell, refCell;
+
+      for (i = 0; i < rows.length; i++) {
+        row     = rows[i];
+        refCell = row.cells[colIndex] || null;
+        newCell = _createCell(composer.doc);
+        if (refCell) {
+          row.insertBefore(newCell, refCell);
+        } else {
+          row.appendChild(newCell);
+        }
+      }
+
+      // Restore focus to the original cell (it may have shifted)
+      composer.selection.selectNode(cell, true);
+    },
+
+    state: function(composer) {
+      return !!_getCurrentCell(composer);
+    }
+  };
+
+  // ---------- addColAfter ----------
+  wysihtml5.commands.addColAfter = {
+    exec: function(composer, command) {
+      var cell = _getCurrentCell(composer);
+      if (!cell) { return; }
+
+      var colIndex = _getColIndex(cell),
+          table    = _getTable(cell),
+          rows     = table.rows,
+          i, row, newCell, refCell;
+
+      for (i = 0; i < rows.length; i++) {
+        row     = rows[i];
+        refCell = row.cells[colIndex + 1] || null;
+        newCell = _createCell(composer.doc);
+        if (refCell) {
+          row.insertBefore(newCell, refCell);
+        } else {
+          row.appendChild(newCell);
+        }
+      }
+
+      // Restore focus to the original cell
+      composer.selection.selectNode(cell, true);
+    },
+
+    state: function(composer) {
+      return !!_getCurrentCell(composer);
+    }
+  };
+
+  // ---------- deleteRow ----------
+  wysihtml5.commands.deleteRow = {
+    exec: function(composer, command) {
+      var cell = _getCurrentCell(composer);
+      if (!cell) { return; }
+
+      var row      = _getRow(cell),
+          table    = _getTable(cell),
+          tbody    = row.parentNode,
+          allRows  = table.rows,
+          cellBelow;
+
+      // If this is the only row, delete the entire table instead
+      if (allRows.length <= 1) {
+        wysihtml5.commands.deleteTable.exec(composer, command);
+        return;
+      }
+
+      // Try to focus the cell in the next or previous row at the same column
+      var colIndex = _getColIndex(cell);
+      var nextRow  = row.nextSibling || row.previousSibling;
+
+      row.parentNode.removeChild(row);
+
+      if (nextRow && nextRow.cells && nextRow.cells[colIndex]) {
+        composer.selection.selectNode(nextRow.cells[colIndex], true);
+      }
+    },
+
+    state: function(composer) {
+      return !!_getCurrentCell(composer);
+    }
+  };
+
+  // ---------- deleteCol ----------
+  wysihtml5.commands.deleteCol = {
+    exec: function(composer, command) {
+      var cell = _getCurrentCell(composer);
+      if (!cell) { return; }
+
+      var colIndex = _getColIndex(cell),
+          table    = _getTable(cell),
+          colCount = _getTableColCount(table),
+          rows     = table.rows,
+          i, rowCell;
+
+      // If this is the only column, delete the entire table
+      if (colCount <= 1) {
+        wysihtml5.commands.deleteTable.exec(composer, command);
+        return;
+      }
+
+      // Try to focus an adjacent cell before deleting
+      var focusCell = null;
+      if (rows[0] && rows[0].cells[colIndex + 1]) {
+        focusCell = rows[0].cells[colIndex + 1];
+      } else if (rows[0] && rows[0].cells[colIndex - 1]) {
+        focusCell = rows[0].cells[colIndex - 1];
+      }
+
+      for (i = 0; i < rows.length; i++) {
+        rowCell = rows[i].cells[colIndex];
+        if (rowCell) {
+          rows[i].removeChild(rowCell);
+        }
+      }
+
+      if (focusCell) {
+        composer.selection.selectNode(focusCell, true);
+      }
+    },
+
+    state: function(composer) {
+      return !!_getCurrentCell(composer);
+    }
+  };
+
+  // ---------- deleteTable ----------
+  wysihtml5.commands.deleteTable = {
+    exec: function(composer, command) {
+      var cell = _getCurrentCell(composer);
+      if (!cell) { return; }
+
+      var table     = _getTable(cell),
+          parentNode = table.parentNode,
+          nextNode   = table.nextSibling;
+
+      table.parentNode.removeChild(table);
+
+      // Place cursor after where the table was
+      if (nextNode) {
+        composer.selection.setBefore(nextNode);
+      } else if (parentNode.lastChild) {
+        composer.selection.setAfter(parentNode.lastChild);
+      }
+    },
+
+    state: function(composer) {
+      return !!_getCurrentCell(composer);
+    }
+  };
+
+})(wysihtml5);
+wysihtml5.commands.underline = {
   exec: function(composer, command) {
     return wysihtml5.commands.formatInline.exec(composer, command, "u");
   },
@@ -7896,11 +8336,6 @@ wysihtml5.views.View = Base.extend(
         value = this.parent.parse(value);
       }
 
-      // Replace all "zero width no breaking space" chars
-      // which are used as hacks to enable some functionalities
-      // Also remove all CARET hacks that somehow got left
-      value = wysihtml5.lang.string(value).replace(wysihtml5.INVISIBLE_SPACE).by("");
-
       return value;
     },
 
@@ -8058,6 +8493,7 @@ wysihtml5.views.View = Base.extend(
       this._initObjectResizing();
       this._initUndoManager();
       this._initLineBreaking();
+      this._initTableStyles();
       
       // Simulate html5 autofocus on contentEditable element
       // This doesn't work on IOS (5.1.1)
@@ -8229,17 +8665,33 @@ wysihtml5.views.View = Base.extend(
         });
       }
       
+      // Under certain circumstances Chrome + Safari create nested <p> or <hX> tags after paste
+      // Inserting an invisible white space in front of it fixes the issue
+      if (browser.createsNestedInvalidMarkupAfterPaste()) {
+        dom.observe(this.element, "paste", function(event) {
+          var invisibleSpace = that.doc.createTextNode(wysihtml5.INVISIBLE_SPACE);
+          that.selection.insertNode(invisibleSpace);
+        });
+      }
+
+      
       dom.observe(this.doc, "keydown", function(event) {
         var keyCode = event.keyCode;
-        
+
         if (event.shiftKey) {
           return;
         }
-        
+
         if (keyCode !== wysihtml5.ENTER_KEY && keyCode !== wysihtml5.BACKSPACE_KEY) {
           return;
         }
-        
+
+        // Don't interfere with table cell handling (handled separately in composer.observe.js)
+        var cellElement = dom.getParentElement(that.selection.getSelectedNode(), { nodeName: ["TD", "TH"] });
+        if (cellElement) {
+          return;
+        }
+
         var blockElement = dom.getParentElement(that.selection.getSelectedNode(), { nodeName: USE_NATIVE_LINE_BREAK_INSIDE_TAGS }, 4);
         if (blockElement) {
           setTimeout(function() {
@@ -8271,6 +8723,19 @@ wysihtml5.views.View = Base.extend(
           event.preventDefault();
         }
       });
+    },
+
+    _initTableStyles: function() {
+      // Inject minimal default table styles into the iframe so tables are always visible
+      // even when no external stylesheet is loaded
+      dom.insertCSS([
+        "table.wysiwyg-table { border-collapse: collapse; width: 100%; margin: 8px 0; }",
+        "table.wysiwyg-table td, table.wysiwyg-table th { border: 1px solid #999; padding: 4px 6px; min-width: 30px; vertical-align: top; }",
+        "table.wysiwyg-table th { background-color: #f0f0f0; font-weight: bold; }",
+        "table.wysiwyg-table-bordered td, table.wysiwyg-table-bordered th { border: 1px solid #999; }",
+        "table { border-collapse: collapse; }",
+        "table td, table th { border: 1px solid #ccc; padding: 4px; min-width: 20px; }"
+      ]).into(this.doc);
     }
   });
 })(wysihtml5);(function(wysihtml5) {
@@ -8603,6 +9068,107 @@ wysihtml5.views.View = Base.extend(
       }
     });
 
+    // --------- Tab key table navigation ---------
+    dom.observe(element, "keydown", function(event) {
+      var keyCode      = event.keyCode,
+          selectedNode, cell, row, table, cells, colIndex,
+          nextCell, prevCell, newRow, nextRow, firstCellOfNextRow;
+
+      if (keyCode !== wysihtml5.TAB_KEY) {
+        return;
+      }
+
+      selectedNode = that.selection.getSelectedNode();
+      cell = wysihtml5.dom.getParentElement(selectedNode, { nodeName: ["TD", "TH"] });
+      if (!cell) {
+        return;
+      }
+
+      row      = wysihtml5.dom.getParentElement(cell, { nodeName: "TR" });
+      table    = wysihtml5.dom.getParentElement(cell, { nodeName: "TABLE" });
+      if (!row || !table) {
+        return;
+      }
+
+      cells    = row.cells;
+      colIndex = Array.prototype.indexOf.call(cells, cell);
+
+      if (event.shiftKey) {
+        // Shift+Tab: move to previous cell, or last cell of previous row
+        if (colIndex > 0) {
+          prevCell = cells[colIndex - 1];
+        } else {
+          // Go to last cell of previous row
+          var prevRow = row.previousSibling;
+          while (prevRow && prevRow.nodeName !== "TR") {
+            prevRow = prevRow.previousSibling;
+          }
+          if (prevRow && prevRow.cells && prevRow.cells.length > 0) {
+            prevCell = prevRow.cells[prevRow.cells.length - 1];
+          }
+        }
+        if (prevCell) {
+          that.selection.selectNode(prevCell, true);
+        }
+      } else {
+        // Tab: move to next cell, or first cell of next row, or create new row
+        if (colIndex < cells.length - 1) {
+          nextCell = cells[colIndex + 1];
+        } else {
+          // Go to first cell of next row
+          nextRow = row.nextSibling;
+          while (nextRow && nextRow.nodeName !== "TR") {
+            nextRow = nextRow.nextSibling;
+          }
+          if (nextRow && nextRow.cells && nextRow.cells.length > 0) {
+            firstCellOfNextRow = nextRow.cells[0];
+          } else {
+            // Last cell of last row: add a new row
+            var colCount = 0;
+            for (var k = 0; k < cells.length; k++) {
+              colCount += (cells[k].colSpan || 1);
+            }
+            newRow = that.doc.createElement("tr");
+            for (var m = 0; m < colCount; m++) {
+              var newCell = that.doc.createElement("td");
+              newCell.innerHTML = "<br>";
+              newRow.appendChild(newCell);
+            }
+            row.parentNode.appendChild(newRow);
+            firstCellOfNextRow = newRow.cells[0];
+          }
+          nextCell = firstCellOfNextRow;
+        }
+        if (nextCell) {
+          that.selection.selectNode(nextCell, true);
+        }
+      }
+
+      event.preventDefault();
+    });
+
+    // --------- Enter key handling inside table cells ---------
+    dom.observe(element, "keydown", function(event) {
+      var keyCode      = event.keyCode,
+          selectedNode, cell;
+
+      if (keyCode !== wysihtml5.ENTER_KEY) {
+        return;
+      }
+
+      selectedNode = that.selection.getSelectedNode();
+      cell = wysihtml5.dom.getParentElement(selectedNode, { nodeName: ["TD", "TH"] });
+      if (!cell) {
+        return;
+      }
+
+      // Inside a table cell, Enter inserts a line break rather than creating a new paragraph
+      if (!event.shiftKey) {
+        that.commands.exec("insertLineBreak");
+        event.preventDefault();
+      }
+    });
+
     // --------- Make sure that when pressing backspace/delete on selected images deletes the image and it's anchor ---------
     dom.observe(element, "keydown", function(event) {
       var target  = that.selection.getSelectedNode(true),
@@ -8896,6 +9462,7 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
           callbackWrapper(event);
         }
         if (keyCode === wysihtml5.ESCAPE_KEY) {
+          that.fire("cancel");
           that.hide();
         }
       });
@@ -9263,10 +9830,14 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
       for (; i<length; i++) {
         // 'javascript:;' and unselectable=on Needed for IE, but done in all browsers to make sure that all get the same css applied
         // (you know, a:link { ... } doesn't match anchors with missing href attribute)
-        dom.setAttributes({
-          href:         "javascript:;",
-          unselectable: "on"
-        }).on(links[i]);
+        if (links[i].nodeName === "A") {
+          dom.setAttributes({
+            href:         "javascript:;",
+            unselectable: "on"
+          }).on(links[i]);
+        } else {
+          dom.setAttributes({ unselectable: "on" }).on(links[i]);
+        }
       }
 
       // Needed for opera and chrome
@@ -9459,7 +10030,9 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
     // Placeholder text to use, defaults to the placeholder attribute on the textarea element
     placeholderText:      undef,
     // Whether the rich text editor should be rendered on touch devices (wysihtml5 >= 0.3.0 comes with basic support for iOS 5)
-    supportTouchDevices:  true
+    supportTouchDevices:  true,
+    // Whether senseless <span> elements (empty or without attributes) should be removed/replaced with their content
+    cleanUp:              true
   };
   
   wysihtml5.Editor = wysihtml5.lang.Dispatcher.extend(
@@ -9554,7 +10127,7 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
     },
     
     parse: function(htmlOrElement) {
-      var returnValue = this.config.parser(htmlOrElement, this.config.parserRules, this.composer.sandbox.getDocument(), true);
+      var returnValue = this.config.parser(htmlOrElement, this.config.parserRules, this.composer.sandbox.getDocument(), this.config.cleanUp);
       if (typeof(htmlOrElement) === "object") {
         wysihtml5.quirks.redraw(htmlOrElement);
       }
